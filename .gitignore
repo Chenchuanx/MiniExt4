@@ -1,0 +1,41 @@
+# 构建目录
+build/
+
+# 编译产物
+*.bin
+*.iso
+*.o
+*.a
+*.so
+
+# CMake 生成文件
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# clangd 缓存（由语言服务器自动生成）
+.cache/
+
+# compile_commands.json（可选：如果不想提交）
+compile_commands.json
+
+# 临时文件
+*.tmp
+*.log
+*.bak
+
+# 脚本生成的文件
+create_iso.sh
+
+# clangd 配置文件
+.clangd
