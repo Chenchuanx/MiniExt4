@@ -36,4 +36,11 @@ typedef int32_t                ssize_t;
 typedef uint32_t               uintptr_t;
 typedef int32_t                intptr_t;
 
-#endif /* _LINUX_TYPES_H */
+/* bool 类型定义 */
+#ifndef __cplusplus
+typedef int bool;
+#define true 1
+#define false 0
+#endif
+
+#endif /* __LINUX_TYPES_H */
