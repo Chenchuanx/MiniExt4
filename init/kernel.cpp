@@ -8,6 +8,9 @@
 #include <lib/console.h>
 #include <lib/shell.h>
 #include <drivers/handlers.h>
+#include <drivers/ata.h>
+#include <linux/fs.h>
+#include <fs/ext4/ext4.h>
 
 // 构造函数类型定义
 typedef void (*constructor)();
@@ -38,10 +41,6 @@ extern "C" void kernelMain(void * multiboo_structure, int32_t magicnumber)
 
     // 初始化任务管理器
     TaskManager taskManger;
-    //Task task1(&gdt, taskA);
-    //Task task2(&gdt, taskB);
-    //taskManger.AddTask(&task1);
-    //taskManger.AddTask(&task2);
 
     // 初始化中断管理器
     InterruptManager interrupts(&gdt, &taskManger);
@@ -67,6 +66,33 @@ extern "C" void kernelMain(void * multiboo_structure, int32_t magicnumber)
 
     // 激活中断
     interrupts.Activate();
+
+    // 初始化 ATA 驱动
+    printf("Initializing ATA driver...\n");
+    if (ata_init() == 0) {
+        printf("ATA driver initialized successfully\n");
+    } else {
+        printf("ATA driver initialization failed\n");
+    }
+
+    // 注册 Ext4 文件系统
+    printf("Registering Ext4 filesystem...\n");
+    if (register_filesystem(&ext4_fs_type) == 0) {
+        printf("Ext4 filesystem registered successfully\n");
+    } else {
+        printf("Ext4 filesystem registration failed\n");
+    }
+
+    // 尝试挂载 Ext4（简化版，直接挂载）
+    printf("Mounting Ext4 filesystem...\n");
+    struct dentry *root = ext4_fs_type.mount(&ext4_fs_type, 0, nullptr, nullptr);
+    if (root) {
+        printf("Ext4 filesystem mounted successfully\n");
+        // 简化版：printf 不支持格式化，只显示基本信息
+        printf("Root inode mounted\n");
+    } else {
+        printf("Ext4 filesystem mount failed\n");
+    }
 
     // 显示Shell提示符
     sysprintf("ChenYingXing:>");

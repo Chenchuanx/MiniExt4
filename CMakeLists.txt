@@ -37,6 +37,8 @@ set(KERNEL_SOURCES
     fs/vfs_inode.cpp
     fs/ext4/super.cpp
     fs/ext4/inode.cpp
+    fs/ext4/io.cpp
+    drivers/ata.cpp
     kernel/interrupts/interrupts.cpp
     kernel/sched/multitasking.cpp
     kernel/sched/tasks.cpp
