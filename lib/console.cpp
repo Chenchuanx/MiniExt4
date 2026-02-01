@@ -27,11 +27,12 @@ void printf(const int8_t * str)
     if (str[0] == '\b')
     {   
         --x;
-        if (x <= 6)
+        if (x < 0)
         {
-            x = 6;
+            x = 0;
         }
-        VideoMemory[80 * y + x] = 0x0700;
+        VideoMemory[80 * y + x] = 0x0700;  // 清空字符，保留背景色
+        setCursorPosition(x, y);
         return;
     }
     
@@ -54,15 +55,29 @@ void printf(const int8_t * str)
             x = 0;
         }
 
+        // 屏幕滚动：当到达最后一行时，向上滚动
         if(y >= 25)
         {
-            for(y = 0; y < 25; ++y)
-                for(x = 0; x < 80; ++x)
-                    VideoMemory[80 * y + x] = (VideoMemory[80 * y + x] & 0xFF00) | str[i];
-            x = 0;
-            y = 0;
+            // 向上滚动：将第 1-24 行复制到第 0-23 行
+            for(int8_t row = 0; row < 24; ++row)
+            {
+                for(int8_t col = 0; col < 80; ++col)
+                {
+                    VideoMemory[80 * row + col] = VideoMemory[80 * (row + 1) + col];
+                }
+            }
+            // 清空最后一行（第 24 行）
+            for(int8_t col = 0; col < 80; ++col)
+            {
+                VideoMemory[80 * 24 + col] = 0x0700;  // 空格字符，灰色背景
+            }
+            // 光标移到最后一行
+            y = 24;
         }
     }
+    
+    // 更新硬件光标位置
+    setCursorPosition(x, y);
 }
 
 void printfHex(const uint8_t num)
