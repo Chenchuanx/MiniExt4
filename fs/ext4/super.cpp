@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * Ext4 超级块和挂载实现
  */
@@ -172,24 +171,31 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     uint32_t inodes_per_group;
     uint32_t groups_count;
     uint32_t first_data_block;
-    uint32_t inode_size = 128;  /* 默认 inode 大小 128 字节 */
+    uint32_t inode_size = 256;  /* Ext4 默认 inode 大小 256 字节 */
     int ret;
     
     /* 设置块大小 */
     ext4_set_block_size(block_size);
     
     /* 计算文件系统参数 */
-    blocks_per_group = 32768;  /* 简化：固定每组 32768 块 */
+    /* 对于小文件系统，blocks_per_group 不能超过 total_blocks */
+    /* 标准 ext4 使用 32768，但对于小文件系统需要调整 */
+    if (total_blocks < 32768) {
+        blocks_per_group = total_blocks;  /* 小文件系统：所有块在一个组 */
+    } else {
+        blocks_per_group = 32768;  /* 标准：每组 32768 块 */
+    }
     inodes_per_group = blocks_per_group / 4;  /* 简化：每 4 块一个 inode */
     groups_count = (total_blocks + blocks_per_group - 1) / blocks_per_group;
     first_data_block = (block_size == 1024) ? 1 : 0;
     
-    /* 分配缓冲区 */
-    buf = (char *)malloc(block_size);
+    /* 分配缓冲区（至少 4096 字节，确保能容纳整个块和超级块） */
+    uint32_t buf_size = (block_size > 4096) ? block_size : 4096;
+    buf = (char *)malloc(buf_size);
     if (!buf) {
         return -1;
     }
-    memset(buf, 0, block_size);
+    memset(buf, 0, buf_size);
     
     /* 读取块 0（包含 boot sector 和 superblock） */
     ret = ext4_read_block(0, buf);
@@ -206,24 +212,27 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_inodes_count = groups_count * inodes_per_group;
     esb->s_blocks_count_lo = total_blocks;
     esb->s_r_blocks_count_lo = total_blocks / 20;  /* 保留 5% 的块 */
-    esb->s_free_blocks_count_lo = total_blocks - esb->s_r_blocks_count_lo - 10;  /* 减去系统块 */
     esb->s_free_inodes_count = esb->s_inodes_count - 10;  /* 减去系统 inode */
+    /* s_free_blocks_count_lo 会在后面根据实际计算的系统块数更新 */
     esb->s_first_data_block = first_data_block;
     esb->s_log_block_size = (block_size == 1024) ? 0 : (block_size == 2048) ? 1 : 2;  /* 简化 */
-    esb->s_log_cluster_size = 0;
+    /* s_log_cluster_size 应等于 s_log_block_size */
+    esb->s_log_cluster_size = esb->s_log_block_size;
     esb->s_blocks_per_group = blocks_per_group;
     esb->s_clusters_per_group = blocks_per_group;
     esb->s_inodes_per_group = inodes_per_group;
-    esb->s_mtime = 0;  /* 简化：使用 0 */
-    esb->s_wtime = 0;
+    /* 设置时间戳（使用一个合理的固定值，Unix 时间戳，大约 2020-01-01） */
+    uint32_t base_time = 0x5E0D9800;  /* 2020-01-01 00:00:00 UTC */
+    esb->s_mtime = base_time;  /* 挂载时间 */
+    esb->s_wtime = base_time;  /* 写入时间 */
     esb->s_mnt_count = 0;
     esb->s_max_mnt_count = 0xFFFF;  /* 无限制 */
     esb->s_magic = EXT4_SUPER_MAGIC;
     esb->s_state = 1;  /* 文件系统干净 */
     esb->s_errors = 1;  /* 继续 */
     esb->s_minor_rev_level = 0;
-    esb->s_lastcheck = 0;
-    esb->s_checkinterval = 0;
+    esb->s_lastcheck = base_time;  /* 最后检查时间 */
+    esb->s_checkinterval = 0;  /* 不强制检查 */
     esb->s_creator_os = 0;  /* Linux */
     esb->s_rev_level = 1;  /* 动态版本 */
     esb->s_def_resuid = 0;
@@ -234,10 +243,56 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_feature_compat = 0;
     esb->s_feature_incompat = 0;
     esb->s_feature_ro_compat = 0;
+    esb->s_mkfs_time = base_time;  /* mkfs 时间 */
+    esb->s_journal_inum = 0;  /* 无日志 */
+    esb->s_journal_dev = 0;  /* 无日志设备 */
+    esb->s_last_orphan = 0;  /* 无孤儿 inode */
+    esb->s_hash_seed[0] = 0;
+    esb->s_hash_seed[1] = 0;
+    esb->s_hash_seed[2] = 0;
+    esb->s_hash_seed[3] = 0;
+    esb->s_def_hash_version = 0;  /* 默认哈希版本 */
+    esb->s_jnl_backup_type = 0;  /* 无日志备份 */
+    esb->s_desc_size = 32;  /* 组描述符大小：32 字节 */
     
-    /* 生成简单的 UUID（简化版） */
+    /* 生成简单的 UUID */
     for (int i = 0; i < 16; i++) {
         esb->s_uuid[i] = (uint8_t)(i * 17);
+    }
+    
+    /* 设置卷名和最后挂载路径 */
+    memset(esb->s_volume_name, 0, sizeof(esb->s_volume_name));
+    memset(esb->s_last_mounted, 0, sizeof(esb->s_last_mounted));
+    
+    /* 设置高位字段（小文件系统应为 0） */
+    esb->s_blocks_count_hi = 0;
+    esb->s_r_blocks_count_hi = 0;
+    esb->s_free_blocks_count_hi = 0;
+    
+    /* 计算系统块数和空闲块数 */
+    uint32_t inode_table_blocks_precalc = (inodes_per_group * inode_size + block_size - 1) / block_size;
+    uint32_t group0_inode_table_precalc;
+    if (block_size == 1024) {
+        group0_inode_table_precalc = 5;
+    } else {
+        group0_inode_table_precalc = 4;
+    }
+    uint32_t root_dir_block_precalc = group0_inode_table_precalc + inode_table_blocks_precalc;
+    uint32_t system_blocks_precalc = root_dir_block_precalc + 1;
+    if (system_blocks_precalc > blocks_per_group) {
+        system_blocks_precalc = blocks_per_group;
+    }
+    uint32_t group_free_blocks_precalc = blocks_per_group - system_blocks_precalc;
+    
+    /* 更新超级块中的空闲块数 */
+    if (groups_count == 1) {
+        if (group_free_blocks_precalc > esb->s_r_blocks_count_lo) {
+            esb->s_free_blocks_count_lo = group_free_blocks_precalc - esb->s_r_blocks_count_lo;
+        } else {
+            esb->s_free_blocks_count_lo = 0;
+        }
+    } else {
+        esb->s_free_blocks_count_lo = total_blocks - esb->s_r_blocks_count_lo - system_blocks_precalc;
     }
     
     /* 写入 superblock */
@@ -269,15 +324,36 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     gd->bg_block_bitmap_lo = group0_block_bitmap;
     gd->bg_inode_bitmap_lo = group0_inode_bitmap;
     gd->bg_inode_table_lo = group0_inode_table;
-    gd->bg_free_blocks_count_lo = blocks_per_group - 10;  /* 减去系统块 */
+    /* 计算实际使用的系统块数 */
+    uint32_t root_dir_block = group0_inode_table + inode_table_blocks;
+    uint32_t system_blocks = root_dir_block + 1;
+    if (system_blocks > blocks_per_group) {
+        system_blocks = blocks_per_group;
+    }
+    uint32_t group_free_blocks = blocks_per_group - system_blocks;
+    gd->bg_free_blocks_count_lo = group_free_blocks;
     gd->bg_free_inodes_count_lo = inodes_per_group - 10;
-    gd->bg_used_dirs_count_lo = 0;
+    gd->bg_used_dirs_count_lo = 1;
     gd->bg_flags = 0;
+    gd->bg_exclude_bitmap_lo = 0;
+    gd->bg_block_bitmap_csum_lo = 0;  /* 简化：不计算校验和 */
+    gd->bg_inode_bitmap_csum_lo = 0;  /* 简化：不计算校验和 */
+    gd->bg_itable_unused_lo = inodes_per_group - 10;
     gd->bg_checksum = 0;  /* 简化：不计算校验和 */
+    /* 设置高位字段（小文件系统应为 0） */
+    gd->bg_block_bitmap_hi = 0;
+    gd->bg_inode_bitmap_hi = 0;
+    gd->bg_inode_table_hi = 0;
+    gd->bg_free_blocks_count_hi = 0;
+    gd->bg_free_inodes_count_hi = 0;
+    gd->bg_used_dirs_count_hi = 0;
+    gd->bg_itable_unused_hi = 0;
+    gd->bg_exclude_bitmap_hi = 0;
+    gd->bg_block_bitmap_csum_hi = 0;
+    gd->bg_inode_bitmap_csum_hi = 0;
+    gd->bg_reserved = 0;
     
     /* 写入 group descriptor */
-    /* 对于 4KB 块：group descriptor 在块 1（first_data_block + 1 = 0 + 1 = 1）*/
-    /* 对于 1KB 块：group descriptor 在块 2（因为 superblock 在块 1）*/
     uint32_t gd_block;
     if (block_size == 1024) {
         gd_block = 2;  /* 1KB 块大小，描述符在块 2 */
@@ -293,7 +369,10 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     /* 初始化 block bitmap（全 0，表示所有块空闲） */
     memset(buf, 0, block_size);
     /* 标记系统块为已使用 */
-    for (uint32_t i = 0; i < group0_inode_table + inode_table_blocks; i++) {
+    /* 系统块包括：块0（超级块）、块1（组描述符）、块2（块位图）、块3（inode位图）、
+     * 块4开始（inode表）、以及根目录数据块 */
+    uint32_t last_system_block = root_dir_block;  /* 根目录数据块是最后一个系统块 */
+    for (uint32_t i = 0; i <= last_system_block; i++) {
         uint32_t byte = i / 8;
         uint32_t bit = i % 8;
         if (byte < block_size) {
@@ -324,16 +403,32 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     struct ext4_inode *root_inode = (struct ext4_inode *)(buf + (2 - 1) * inode_size);
     root_inode->i_mode = 0x41ED;  /* 目录，权限 755 */
     root_inode->i_uid = 0;
-    root_inode->i_size_lo = block_size;  /* 根目录至少一个块 */
-    root_inode->i_atime = 0;
-    root_inode->i_ctime = 0;
-    root_inode->i_mtime = 0;
+    root_inode->i_size_lo = block_size;
+    root_inode->i_size_high = 0;
+    root_inode->i_atime = base_time;
+    root_inode->i_ctime = base_time;
+    root_inode->i_mtime = base_time;
     root_inode->i_dtime = 0;
     root_inode->i_gid = 0;
     root_inode->i_links_count = 2;  /* . 和 .. */
-    root_inode->i_blocks_lo = 1;  /* 一个块 */
+    root_inode->i_blocks_lo = block_size / 512;  /* 以 512 字节为单位 */
+    root_inode->i_blocks_hi = 0;
     root_inode->i_flags = 0;
-    root_inode->i_block[0] = group0_inode_table + inode_table_blocks;  /* 根目录数据块 */
+    root_inode->i_osd1 = 0;
+    root_inode->i_generation = 0;
+    root_inode->i_file_acl_lo = 0;
+    root_inode->i_file_acl_high = 0;
+    root_inode->i_uid_high = 0;
+    root_inode->i_gid_high = 0;
+    root_inode->i_obso_faddr = 0;
+    root_inode->i_obso_osd2 = 0;
+    root_inode->i_checksum_lo = 0;
+    root_inode->i_reserved2 = 0;
+    /* 初始化所有块指针为 0 */
+    for (int i = 0; i < 15; i++) {
+        root_inode->i_block[i] = 0;
+    }
+    root_inode->i_block[0] = group0_inode_table + inode_table_blocks;
     
     ret = ext4_write_block(group0_inode_table, buf);
     if (ret < 0) {
@@ -346,16 +441,20 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     struct ext4_dir_entry *de = (struct ext4_dir_entry *)buf;
     
     /* . 条目 */
+    uint16_t name_len_1 = 1;
+    uint16_t rec_len_1 = (8 + name_len_1 + 3) & ~3;  /* 对齐到 4 字节 */
     de->inode = 2;
-    de->rec_len = 12;
-    de->name_len = 1;
+    de->rec_len = rec_len_1;
+    de->name_len = name_len_1;
     de->name[0] = '.';
     
     /* .. 条目 */
-    de = (struct ext4_dir_entry *)((char *)de + de->rec_len);
+    de = (struct ext4_dir_entry *)((char *)de + rec_len_1);
+    uint16_t name_len_2 = 2;
+    uint16_t rec_len_2 = ((block_size - rec_len_1) / 4) * 4;  /* 剩余空间，对齐到 4 字节 */
     de->inode = 2;
-    de->rec_len = block_size - 12;  /* 剩余空间 */
-    de->name_len = 2;
+    de->rec_len = rec_len_2;
+    de->name_len = name_len_2;
     de->name[0] = '.';
     de->name[1] = '.';
     
@@ -522,7 +621,7 @@ static struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     /* 计算 inode 表块号 */
     inode_table_block = sbi->s_group_desc->bg_inode_table_lo;
     /* 使用 superblock 中的 inode 大小（从 ext4_mkfs 中设置） */
-    uint32_t inode_size = 128;  /* 简化：固定 128 字节 */
+    uint32_t inode_size = 256;  /* Ext4 固定 256 字节 */
     inode_offset = index * inode_size;
     inode_table_block += inode_offset / block_size;
     inode_offset %= block_size;
