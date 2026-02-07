@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * file 结构体定义
  * 按照 Linux 内核标准组织

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * Ext4 块 I/O 实现
  * 封装 ATA 驱动，提供按块读写接口

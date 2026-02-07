@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * Ext4 文件系统定义
  * 包含 on-disk 结构和内存结构

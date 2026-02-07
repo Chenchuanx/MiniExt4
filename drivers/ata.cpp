@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * ATA/IDE 驱动实现
  * 支持 PIO 模式读写
