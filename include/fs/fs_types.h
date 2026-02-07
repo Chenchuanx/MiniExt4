@@ -11,6 +11,12 @@ struct dentry;
 struct file_system_type;
 struct super_block;
 
+/* 文件系统标志 */
+#define FS_REQUIRES_DEV		1	/* 需要块设备 */
+#define FS_BINARY_MOUNTDATA	2	/* 二进制挂载数据 */
+#define FS_HAS_SUBTYPE		4	/* 有子类型 */
+#define FS_USERNS_MOUNT		8	/* 用户命名空间挂载 */
+
 /**
  * file_system_type - 文件系统类型
  * 

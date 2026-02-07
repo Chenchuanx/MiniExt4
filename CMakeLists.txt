@@ -33,11 +33,12 @@ set(KERNEL_SOURCES
     init/interruptstubs.s
     mm/gdt.cpp
     lib/port.cpp
-    fs/vfs_super.cpp
-    fs/vfs_inode.cpp
-    fs/ext4/super.cpp
-    fs/ext4/inode.cpp
-    fs/ext4/io.cpp
+    fs/super.c
+    fs/inode.c
+    fs/dcache.c
+    fs/ext4/super.c
+    fs/ext4/inode.c
+    fs/ext4/io.c
     drivers/ata.cpp
     kernel/interrupts/interrupts.cpp
     kernel/sched/multitasking.cpp

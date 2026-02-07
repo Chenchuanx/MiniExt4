@@ -3,6 +3,10 @@
 
 #include <linux/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // 设置VGA硬件光标位置
 void setCursorPosition(uint8_t x, uint8_t y);
 
@@ -11,6 +15,10 @@ void printf(const int8_t * str);
 
 // 以十六进制格式输出数字
 void printfHex(const uint8_t num);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 

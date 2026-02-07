@@ -5,6 +5,11 @@
 #include <fs/fs_types.h>
 #include <fs/ext4/ext4.h>
 #include <lib/console.h>
+#include <fs/dentry.h>  /* 使用 VFS dentry 接口 */
+
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
 
 /* 前向声明 */
 extern int ext4_read_block(uint32_t blocknr, void *buf);
@@ -14,7 +19,8 @@ extern void ext4_set_block_size(uint32_t size);
 static void *simple_memset(void *s, int c, size_t n)
 {
 	unsigned char *p = (unsigned char *)s;
-	for (size_t i = 0; i < n; i++) {
+	size_t i;
+	for (i = 0; i < n; i++) {
 		p[i] = (unsigned char)c;
 	}
 	return s;
@@ -24,7 +30,8 @@ static void *simple_memcpy(void *dest, const void *src, size_t n)
 {
 	unsigned char *d = (unsigned char *)dest;
 	const unsigned char *s = (const unsigned char *)src;
-	for (size_t i = 0; i < n; i++) {
+	size_t i;
+	for (i = 0; i < n; i++) {
 		d[i] = s[i];
 	}
 	return dest;
@@ -37,28 +44,30 @@ static void *simple_memcpy(void *dest, const void *src, size_t n)
 #define MAX_MALLOC_SIZE 4096
 #define MAX_MALLOC_BLOCKS 32
 static char malloc_pool[MAX_MALLOC_BLOCKS][MAX_MALLOC_SIZE];
-static bool malloc_used[MAX_MALLOC_BLOCKS];
+static int malloc_used[MAX_MALLOC_BLOCKS];
 
 static void *simple_malloc(size_t size)
 {
+	int i;
 	if (size > MAX_MALLOC_SIZE) {
-		return nullptr;
+		return NULL;
 	}
-	for (int i = 0; i < MAX_MALLOC_BLOCKS; i++) {
+	for (i = 0; i < MAX_MALLOC_BLOCKS; i++) {
 		if (!malloc_used[i]) {
-			malloc_used[i] = true;
+			malloc_used[i] = 1;
 			return malloc_pool[i];
 		}
 	}
-	return nullptr;
+	return NULL;
 }
 
 static void simple_free(void *ptr)
 {
+	int i;
 	if (!ptr) return;
-	for (int i = 0; i < MAX_MALLOC_BLOCKS; i++) {
+	for (i = 0; i < MAX_MALLOC_BLOCKS; i++) {
 		if (malloc_pool[i] == ptr) {
-			malloc_used[i] = false;
+			malloc_used[i] = 0;
 			return;
 		}
 	}
@@ -80,14 +89,14 @@ static struct inode *ext4_iget(struct super_block *sb, unsigned long ino);
 static const struct super_operations ext4_sops = {
     ext4_alloc_inode,      /* alloc_inode */
     ext4_destroy_inode,    /* destroy_inode */
-    nullptr,               /* put_super */
-    nullptr,               /* sync_fs */
-    nullptr,               /* statfs */
-    nullptr,               /* remount_fs */
-    nullptr,               /* umount_begin */
-    nullptr,               /* dirty_inode */
-    nullptr,               /* write_inode */
-    nullptr,               /* evict_inode */
+    NULL,                  /* put_super */
+    NULL,                  /* sync_fs */
+    NULL,                  /* statfs */
+    NULL,                  /* remount_fs */
+    NULL,                  /* umount_begin */
+    NULL,                   /* dirty_inode */
+    NULL,                  /* write_inode */
+    NULL,                  /* evict_inode */
 };
 
 /* Ext4 文件系统类型描述 */
@@ -96,32 +105,13 @@ struct file_system_type ext4_fs_type = {
     0,
     ext4_mount,
     ext4_kill_sb,
-    { nullptr, nullptr },
-    nullptr,
-    false,
-    nullptr,
+    { NULL, NULL },
+    NULL,
+    0,  /* false */
+    NULL,
 };
 
-/* 简化的 dentry 分配（静态池） */
-#define MAX_DENTRIES 64
-static struct dentry dentry_pool[MAX_DENTRIES];
-static bool dentry_used[MAX_DENTRIES];
-
-static struct dentry *alloc_dentry(void)
-{
-    for (int i = 0; i < MAX_DENTRIES; i++) {
-        if (!dentry_used[i]) {
-            dentry_used[i] = true;
-            struct dentry *d = &dentry_pool[i];
-            memset(d, 0, sizeof(*d));
-            d->d_count = 1;
-            INIT_LIST_HEAD(&d->d_child);
-            INIT_LIST_HEAD(&d->d_subdirs);
-            return d;
-        }
-    }
-    return nullptr;
-}
+/* 注意：dentry 分配现在由 VFS 层的 d_alloc() 统一管理 */
 
 /**
  * ext4_alloc_inode - 分配 Ext4 inode
@@ -130,14 +120,14 @@ static struct inode *ext4_alloc_inode(struct super_block *sb)
 {
     struct inode *inode = vfs_alloc_inode(sb);
     if (!inode) {
-        return nullptr;
+        return NULL;
     }
     
     /* 分配 Ext4 私有数据 */
     struct ext4_inode_info *ei = (struct ext4_inode_info *)malloc(sizeof(*ei));
     if (!ei) {
         vfs_free_inode(inode);
-        return nullptr;
+        return NULL;
     }
     memset(ei, 0, sizeof(*ei));
     inode->i_private = ei;
@@ -152,7 +142,7 @@ static void ext4_destroy_inode(struct inode *inode)
 {
     if (inode && inode->i_private) {
         free(inode->i_private);
-        inode->i_private = nullptr;
+        inode->i_private = NULL;
     }
     vfs_free_inode(inode);
 }
@@ -586,12 +576,39 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     sb->s_blocksize = block_size;
     sb->s_blocksize_bits = esb->s_log_block_size + 10;
     sb->s_maxbytes = ((loff_t)1 << 60) - 1;  /* 简化版 */
-    sb->s_op = &ext4_sops;
+    sb->s_op = &ext4_sops;  /* 设置操作函数表 */
     sb->s_flags = 0;
-    sb->s_fs_info = sbi;
+    sb->s_fs_info = sbi;    /* 设置文件系统私有信息 */
     
     /* 复制 UUID */
     memcpy(sb->s_uuid.b, esb->s_uuid, 16);
+    
+    /* 创建根 dentry 和根 inode（VFS 层需要） */
+    struct inode *root_inode = ext4_iget(sb, sbi->s_root_ino);
+    if (!root_inode) {
+        printf("ext4_iget failed for root inode\n");
+        free(sbi);
+        return -1;
+    }
+    
+    /* 使用 VFS 的 d_alloc 创建根 dentry */
+    struct qstr root_name;
+    qstr_init(&root_name, "/", 1);
+    struct dentry *root_dentry = d_alloc(NULL, &root_name);
+    if (!root_dentry) {
+        printf("d_alloc failed for root dentry\n");
+        vfs_free_inode(root_inode);
+        free(sbi);
+        return -1;
+    }
+    
+    /* 关联 dentry 和 inode */
+    d_instantiate(root_dentry, root_inode);
+    root_dentry->d_sb = sb;
+    root_dentry->d_parent = root_dentry;  /* 根目录的父目录是自己 */
+    
+    /* 设置到超级块 */
+    sb->s_root = root_dentry;
     
     return 0;
 }
@@ -615,7 +632,7 @@ static struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     int ret;
     
     if (!sbi || !sbi->s_group_desc) {
-        return nullptr;
+        return NULL;
     }
     
     /* 计算 inode 表块号 */
@@ -629,7 +646,7 @@ static struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     /* 分配缓冲区 */
     buf = (char *)malloc(block_size);
     if (!buf) {
-        return nullptr;
+        return NULL;
     }
     
     /* 读取包含 inode 的块 */
@@ -637,7 +654,7 @@ static struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     if (ret < 0) {
         printf("Failed to read inode table\n");
         free(buf);
-        return nullptr;
+        return NULL;
     }
     
     raw_inode = (struct ext4_inode *)(buf + inode_offset);
@@ -646,7 +663,7 @@ static struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     inode = ext4_alloc_inode(sb);
     if (!inode) {
         free(buf);
-        return nullptr;
+        return NULL;
     }
     
     ei = (struct ext4_inode_info *)inode->i_private;
@@ -674,65 +691,14 @@ static struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 
 /**
  * ext4_mount - 挂载 Ext4 文件系统
+ * 
+ * 使用 VFS 的 mount_bdev 统一接口，ext4 只需要实现 fill_super
  */
 static struct dentry *ext4_mount(struct file_system_type *fs_type,
                                  int flags, const char *dev_name, void *data)
 {
-    struct super_block *sb;
-    struct inode *root_inode;
-    struct dentry *root_dentry;
-    int ret;
-    
-    (void)fs_type;
-    (void)flags;
-    (void)dev_name;
-    
-    /* 分配 super_block（简化版，使用静态分配） */
-    static struct super_block ext4_sb;
-    memset(&ext4_sb, 0, sizeof(ext4_sb));
-    sb = &ext4_sb;
-    
-    INIT_LIST_HEAD(&sb->s_list);
-    sb->s_dev = 0;  /* 简化版 */
-    sb->s_count = 1;
-    sb->s_active = 1;
-    
-    /* 填充超级块 */
-    ret = ext4_fill_super(sb, data);
-    if (ret < 0) {
-        printf("ext4_fill_super failed\n");
-        return nullptr;
-    }
-    
-    /* 获取根 inode */
-    struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
-    if (!sbi) {
-        printf("sbi is null\n");
-        return nullptr;
-    }
-    root_inode = ext4_iget(sb, sbi->s_root_ino);
-    if (!root_inode) {
-        printf("ext4_iget failed for root inode\n");
-        return nullptr;
-    }
-    
-    /* 创建根 dentry */
-    root_dentry = alloc_dentry();
-    if (!root_dentry) {
-        vfs_free_inode(root_inode);
-        return nullptr;
-    }
-    
-    root_dentry->d_sb = sb;
-    root_dentry->d_inode = root_inode;
-    root_dentry->d_parent = root_dentry;  /* 根目录的父目录是自己 */
-    root_dentry->d_name.name = (const unsigned char *)"/";
-    root_dentry->d_name.len = 1;
-    root_dentry->d_name.hash = 0;
-    
-    sb->s_root = root_dentry;
-    
-    return root_dentry;
+    /* 使用 VFS 的统一挂载接口 */
+    return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
 }
 
 /**
@@ -752,6 +718,6 @@ static void ext4_kill_sb(struct super_block *sb)
             free(sbi->s_group_desc);
         }
         free(sbi);
-        sb->s_fs_info = nullptr;
+        sb->s_fs_info = NULL;
     }
 }

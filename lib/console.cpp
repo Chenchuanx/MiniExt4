@@ -1,6 +1,8 @@
 #include <lib/console.h>
 #include <lib/port.h>
 
+extern "C" {
+
 // 设置VGA硬件光标位置
 void setCursorPosition(uint8_t x, uint8_t y)
 {
@@ -90,3 +92,5 @@ void printfHex(const uint8_t num)
     msg[2] = '\0';
     printf(msg);
 }
+
+} /* extern "C" */

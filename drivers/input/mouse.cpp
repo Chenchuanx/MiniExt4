@@ -1,7 +1,5 @@
 #include <drivers/mouse.h>
-
-void printf(const char *);
-void printfHex(const uint8_t);
+#include <lib/console.h>
 
 MouseEventHandler::MouseEventHandler() { }
 

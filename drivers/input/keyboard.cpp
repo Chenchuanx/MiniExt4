@@ -1,7 +1,5 @@
 #include <drivers/keyboard.h>
-
-void printf(const char *);
-void printfHex(const uint8_t);
+#include <lib/console.h>
 void simpleShell(const char c, KeyboardDriver * pKeyDriver);
 
 KeyboardEventHandler::KeyboardEventHandler()

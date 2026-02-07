@@ -39,3 +39,6 @@ create_iso.sh
 
 # clangd 配置文件
 .clangd
+
+# 其他文件
+*.img

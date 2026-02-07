@@ -7,6 +7,10 @@
 
 #include <linux/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ATA 主通道端口 */
 #define ATA_DATA        0x1F0
 #define ATA_ERROR       0x1F1
@@ -65,6 +69,10 @@ int ata_read_sectors(uint32_t lba, uint8_t count, void *buf);
  * 返回 0 表示成功，负数表示失败
  */
 int ata_write_sectors(uint32_t lba, uint8_t count, const void *buf);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _DRIVERS_ATA_H */
 

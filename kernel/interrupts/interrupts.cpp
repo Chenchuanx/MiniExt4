@@ -1,7 +1,6 @@
 # include <kernel/interrupts.h>
 
-void printf(const int8_t * );
-void printfHex(const uint8_t);
+#include <lib/console.h>
 
 InterruptHandler::InterruptHandler(uint8_t interruptNumber, InterruptManager * interruptManager)
     : interruptNumber(interruptNumber), interruptManager(interruptManager)
