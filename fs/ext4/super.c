@@ -84,6 +84,7 @@ static struct inode *ext4_alloc_inode(struct super_block *sb);
 static void ext4_destroy_inode(struct inode *inode);
 static int ext4_fill_super(struct super_block *sb, void *data);
 static struct inode *ext4_iget(struct super_block *sb, unsigned long ino);
+static int ext4_write_inode(struct inode *inode, struct writeback_control *wbc);
 
 /* Ext4 的 super_operations */
 static const struct super_operations ext4_sops = {
@@ -95,7 +96,7 @@ static const struct super_operations ext4_sops = {
     NULL,                  /* remount_fs */
     NULL,                  /* umount_begin */
     NULL,                   /* dirty_inode */
-    NULL,                  /* write_inode */
+    ext4_write_inode,      /* write_inode */
     NULL,                  /* evict_inode */
 };
 
@@ -687,6 +688,115 @@ static struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     free(buf);
     
     return inode;
+}
+
+/**
+ * ext4_write_inode - 将 VFS inode 写回 Ext4 磁盘 inode
+ *
+ * 参考 Linux 内核 fs/ext4/inode.c::ext4_write_inode（极简版，无日志、无事务）
+ */
+static int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
+{
+    struct super_block *sb = inode->i_sb;
+    struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+    struct ext4_inode_info *ei;
+    struct ext4_inode *raw_inode;
+    uint32_t block_size;
+    uint32_t inodes_per_group;
+    uint32_t group, index;
+    uint32_t inode_table_block;
+    uint32_t inode_offset;
+    uint32_t inode_size = 256; /* 与 ext4_mkfs / ext4_iget 保持一致 */
+    char *buf;
+    int ret;
+    uint64_t size;
+    uint64_t blocks;
+
+    (void)wbc; /* 当前未使用 */
+
+    if (!sbi || !sbi->s_group_desc) {
+        return -1;
+    }
+
+    block_size = sbi->s_block_size;
+    inodes_per_group = sbi->s_inodes_per_group;
+
+    if (inode->i_ino == 0) {
+        return -1;
+    }
+
+    group  = (inode->i_ino - 1) / inodes_per_group;
+    index  = (inode->i_ino - 1) % inodes_per_group;
+
+    /* 简化版：仅支持单块组文件系统 */
+    if (group != 0) {
+        return -1;
+    }
+
+    /* 计算 inode 表块号与偏移（与 ext4_iget 相同） */
+    inode_table_block = sbi->s_group_desc->bg_inode_table_lo;
+    inode_offset = index * inode_size;
+    inode_table_block += inode_offset / block_size;
+    inode_offset %= block_size;
+
+    buf = (char *)malloc(block_size);
+    if (!buf) {
+        return -1;
+    }
+
+    /* 读取包含该 inode 的块 */
+    ret = ext4_read_block(inode_table_block, buf);
+    if (ret < 0) {
+        free(buf);
+        return -1;
+    }
+
+    raw_inode = (struct ext4_inode *)(buf + inode_offset);
+    ei = (struct ext4_inode_info *)inode->i_private;
+    if (!ei) {
+        free(buf);
+        return -1;
+    }
+
+    /* 将 VFS inode 字段写回到磁盘 inode 结构 */
+    raw_inode->i_mode = inode->i_mode;
+
+    size = (uint64_t)inode->i_size;
+    raw_inode->i_size_lo   = (uint32_t)(size & 0xFFFFFFFFULL);
+    raw_inode->i_size_high = (uint32_t)(size >> 32);
+
+    blocks = (uint64_t)inode->i_blocks;
+    raw_inode->i_blocks_lo = (uint32_t)(blocks & 0xFFFFFFFFULL);
+    raw_inode->i_blocks_hi = (uint16_t)((blocks >> 32) & 0xFFFFU);
+
+    raw_inode->i_atime = (uint32_t)inode->i_atime;
+    raw_inode->i_mtime = (uint32_t)inode->i_mtime;
+    raw_inode->i_ctime = (uint32_t)inode->i_ctime;
+
+    /* UID / GID 拆分为高低位 */
+    raw_inode->i_uid      = (uint16_t)(inode->i_uid & 0xFFFFU);
+    raw_inode->i_uid_high = (uint16_t)((inode->i_uid >> 16) & 0xFFFFU);
+    raw_inode->i_gid      = (uint16_t)(inode->i_gid & 0xFFFFU);
+    raw_inode->i_gid_high = (uint16_t)((inode->i_gid >> 16) & 0xFFFFU);
+
+    raw_inode->i_links_count = (uint16_t)inode->i_nlink;
+
+    /* Ext4 私有数据：块指针和标志 */
+    memcpy(raw_inode->i_block, ei->i_block, sizeof(raw_inode->i_block));
+    raw_inode->i_flags = ei->i_flags;
+
+    /* 其余字段（ACL、OS 特定字段等）保持不变 */
+
+    /* 将修改后的块写回磁盘 */
+    ret = ext4_write_block(inode_table_block, buf);
+
+    free(buf);
+
+    if (ret < 0) {
+        return -1;
+    }
+
+    return 0;
 }
 
 /**
