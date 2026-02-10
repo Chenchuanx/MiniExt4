@@ -226,6 +226,10 @@ uint32_t ext4_get_block_size(void);
 /* Ext4 文件系统初始化（格式化） */
 int ext4_mkfs(uint32_t block_size, uint32_t total_blocks);
 
+/* 块分配和释放 */
+uint32_t ext4_new_block(struct super_block *sb);
+int ext4_free_block(struct super_block *sb, uint32_t blocknr);
+
 /* Ext4 文件系统类型（外部声明） */
 extern struct file_system_type ext4_fs_type;
 
