@@ -90,6 +90,7 @@ struct inode {
 	/* 文件系统相关 */
 	struct super_block	*i_sb;		/* 所属超级块 */
 	const struct inode_operations *i_op;	/* inode 操作函数 */
+	const struct file_operations *i_fop;	/* 默认文件操作（open 时设置 file->f_op） */
 	
 	/* 状态标志 */
 	unsigned long		i_state;	/* inode 状态标志 */

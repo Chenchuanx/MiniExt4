@@ -230,6 +230,30 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks);
 uint32_t ext4_new_block(struct super_block *sb);
 int ext4_free_block(struct super_block *sb, uint32_t blocknr);
 
+/* Inode 分配和释放 */
+uint32_t ext4_new_inode(struct super_block *sb);
+int ext4_free_inode(struct super_block *sb, uint32_t ino);
+
+/* 根据 inode 号从磁盘加载 inode（供 lookup 等使用） */
+struct inode *ext4_iget(struct super_block *sb, unsigned long ino);
+
+/* 目录项查找/添加/删除（fs/ext4/dir.c） */
+int ext4_find_entry(struct inode *dir, const struct qstr *name,
+		    unsigned long *out_ino, uint32_t *out_blocknr, uint32_t *out_off);
+int ext4_add_entry(struct inode *dir, const struct qstr *name, unsigned long ino);
+int ext4_remove_entry(struct inode *dir, const struct qstr *name);
+int ext4_dir_foreach(struct inode *dir, void *ctx,
+		     int (*filldir)(void *ctx, const char *name, int name_len,
+				   unsigned long ino, unsigned int type));
+
+/* Ext4 inode 操作（供 ext4_iget 设置 inode->i_op） */
+extern const struct inode_operations ext4_dir_inode_operations;
+extern const struct inode_operations ext4_file_inode_operations;
+
+/* Ext4 默认文件/目录操作（供 ext4_iget 设置 inode->i_fop） */
+extern const struct file_operations ext4_file_operations;
+extern const struct file_operations ext4_dir_operations;
+
 /* Ext4 文件系统类型（外部声明） */
 extern struct file_system_type ext4_fs_type;
 

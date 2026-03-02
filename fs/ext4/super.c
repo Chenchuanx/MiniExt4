@@ -83,7 +83,6 @@ static void ext4_kill_sb(struct super_block *sb);
 static struct inode *ext4_alloc_inode(struct super_block *sb);
 static void ext4_destroy_inode(struct inode *inode);
 static int ext4_fill_super(struct super_block *sb, void *data);
-static struct inode *ext4_iget(struct super_block *sb, unsigned long ino);
 static int ext4_write_inode(struct inode *inode, struct writeback_control *wbc);
 
 /* Ext4 的 super_operations */
@@ -617,7 +616,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
 /**
  * ext4_iget - 获取 inode（从磁盘读取）
  */
-static struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
+struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 {
     struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
     struct ext4_inode_info *ei;
@@ -684,6 +683,15 @@ static struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     /* 填充 Ext4 私有数据 */
     memcpy(ei->i_block, raw_inode->i_block, sizeof(raw_inode->i_block));
     ei->i_flags = raw_inode->i_flags;
+    
+    /* 设置 inode 操作和默认文件操作（参考 Linux fs/ext4/inode.c） */
+    if (S_ISDIR(inode->i_mode)) {
+        inode->i_op = &ext4_dir_inode_operations;
+        inode->i_fop = &ext4_dir_operations;
+    } else {
+        inode->i_op = &ext4_file_inode_operations;
+        inode->i_fop = &ext4_file_operations;
+    }
     
     free(buf);
     

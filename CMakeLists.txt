@@ -40,6 +40,9 @@ set(KERNEL_SOURCES
     fs/ext4/inode.c
     fs/ext4/io.c
     fs/ext4/balloc.c
+    fs/ext4/ialloc.c
+    fs/ext4/dir.c
+    fs/ext4/file.c
     drivers/ata.cpp
     kernel/interrupts/interrupts.cpp
     kernel/sched/multitasking.cpp
