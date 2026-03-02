@@ -50,6 +50,10 @@ void d_instantiate(struct dentry *dentry, struct inode *inode);
 u32 d_hash_string(const char *str, int len);
 void qstr_init(struct qstr *qstr, const char *name, int len);
 
+/* 路径解析（简化版 namei） */
+struct dentry *vfs_path_lookup(struct dentry *start, const char *path);
+struct dentry *vfs_lookup_root(struct super_block *sb, const char *path);
+
 /* 超级块和挂载管理（参考 Linux fs/super.c） */
 struct dentry *get_sb_bdev(struct file_system_type *fs_type,
 			    int flags, const char *dev_name, void *data,

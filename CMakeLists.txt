@@ -36,6 +36,7 @@ set(KERNEL_SOURCES
     fs/super.c
     fs/inode.c
     fs/dcache.c
+    fs/namei.c
     fs/ext4/super.c
     fs/ext4/inode.c
     fs/ext4/io.c
