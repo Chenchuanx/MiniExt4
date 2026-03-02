@@ -60,6 +60,229 @@ static void simple_free(void *p)
 #define malloc simple_malloc
 #define free simple_free
 
+/* 获取逻辑块号对应的数据块号
+ * @inode:  文件 inode
+ * @lblock: 逻辑块号（从 0 开始）
+ * @create: 为 1 时允许分配新块，为 0 时不分配
+ * @out_block: 返回的数据块号（0 表示空洞或失败）
+ * @is_new:  返回该数据块是否是新分配的（仅在 create=1 时有意义）
+ *
+ * 成功返回 0，失败返回 -1。
+ */
+static int ext4_get_data_block(struct inode *inode, uint32_t lblock,
+			       int create, uint32_t *out_block, int *is_new)
+{
+	struct super_block *sb = inode->i_sb;
+	struct ext4_inode_info *ei = (struct ext4_inode_info *)inode->i_private;
+	uint32_t block_size = ext4_get_block_size();
+	uint32_t ptrs_per_block = block_size / 4;
+	uint32_t *ind_buf;
+	uint32_t blk;
+	int new_flag = 0;
+
+	if (!ei || !out_block || block_size == 0) {
+		return -1;
+	}
+
+	*out_block = 0;
+	if (is_new) {
+		*is_new = 0;
+	}
+
+	/* 直接块 */
+	if (lblock < 12) {
+		if (ei->i_block[lblock] == 0 && create) {
+			blk = ext4_new_block(sb);
+			if (blk == 0) {
+				return -1;
+			}
+			ei->i_block[lblock] = blk;
+			new_flag = 1;
+		}
+		*out_block = ei->i_block[lblock];
+		if (is_new) {
+			*is_new = new_flag;
+		}
+		return 0;
+	}
+
+	/* 单间接块：i_block[12] 指向间接块，间接块中存放数据块号数组 */
+	lblock -= 12;
+	if (lblock < ptrs_per_block) {
+		ind_buf = (uint32_t *)malloc(block_size);
+		if (!ind_buf) {
+			return -1;
+		}
+
+		blk = ei->i_block[12];
+		if (blk == 0) {
+			if (!create) {
+				free(ind_buf);
+				return 0;
+			}
+			/* 分配间接块并清零 */
+			blk = ext4_new_block(sb);
+			if (blk == 0) {
+				free(ind_buf);
+				return -1;
+			}
+			ei->i_block[12] = blk;
+			memset(ind_buf, 0, block_size);
+			if (ext4_write_block(blk, ind_buf) < 0) {
+				free(ind_buf);
+				return -1;
+			}
+		} else {
+			if (ext4_read_block(blk, ind_buf) < 0) {
+				free(ind_buf);
+				return -1;
+			}
+		}
+
+		if (ind_buf[lblock] == 0 && create) {
+			uint32_t data_blk = ext4_new_block(sb);
+			if (data_blk == 0) {
+				free(ind_buf);
+				return -1;
+			}
+			ind_buf[lblock] = data_blk;
+			if (ext4_write_block(blk, ind_buf) < 0) {
+				free(ind_buf);
+				return -1;
+			}
+			*out_block = data_blk;
+			if (is_new) {
+				*is_new = 1;
+			}
+		} else {
+			*out_block = ind_buf[lblock];
+			if (is_new) {
+				*is_new = 0;
+			}
+		}
+
+		free(ind_buf);
+		return 0;
+	}
+
+	/* 双重间接块：i_block[13] 指向一级间接块，一级块中存放二级间接块号 */
+	lblock -= ptrs_per_block;
+	{
+		uint32_t first_index, second_index;
+		uint32_t first_blk;   /* 一级间接块号 */
+		uint32_t second_blk;  /* 二级间接块号 */
+		uint32_t *first_buf;
+
+		/* 超出双重间接范围则直接返回 0（不支持三重间接） */
+		if (lblock >= ptrs_per_block * ptrs_per_block) {
+			return 0;
+		}
+
+		first_index = lblock / ptrs_per_block;
+		second_index = lblock % ptrs_per_block;
+
+		first_buf = (uint32_t *)malloc(block_size);
+		if (!first_buf) {
+			return -1;
+		}
+
+		first_blk = ei->i_block[13];
+		if (first_blk == 0) {
+			if (!create) {
+				free(first_buf);
+				return 0;
+			}
+			/* 分配一级间接块并清零 */
+			first_blk = ext4_new_block(sb);
+			if (first_blk == 0) {
+				free(first_buf);
+				return -1;
+			}
+			ei->i_block[13] = first_blk;
+			memset(first_buf, 0, block_size);
+			if (ext4_write_block(first_blk, first_buf) < 0) {
+				free(first_buf);
+				return -1;
+			}
+		} else {
+			if (ext4_read_block(first_blk, first_buf) < 0) {
+				free(first_buf);
+				return -1;
+			}
+		}
+
+		second_blk = first_buf[first_index];
+
+		/* 读取或创建二级间接块 */
+		ind_buf = (uint32_t *)malloc(block_size);
+		if (!ind_buf) {
+			free(first_buf);
+			return -1;
+		}
+
+		if (second_blk == 0) {
+			if (!create) {
+				free(first_buf);
+				free(ind_buf);
+				return 0;
+			}
+			second_blk = ext4_new_block(sb);
+			if (second_blk == 0) {
+				free(first_buf);
+				free(ind_buf);
+				return -1;
+			}
+			first_buf[first_index] = second_blk;
+			if (ext4_write_block(first_blk, first_buf) < 0) {
+				free(first_buf);
+				free(ind_buf);
+				return -1;
+			}
+			memset(ind_buf, 0, block_size);
+			if (ext4_write_block(second_blk, ind_buf) < 0) {
+				free(first_buf);
+				free(ind_buf);
+				return -1;
+			}
+		} else {
+			if (ext4_read_block(second_blk, ind_buf) < 0) {
+				free(first_buf);
+				free(ind_buf);
+				return -1;
+			}
+		}
+
+		/* 二级间接块中的实际数据块号 */
+		if (ind_buf[second_index] == 0 && create) {
+			uint32_t data_blk = ext4_new_block(sb);
+			if (data_blk == 0) {
+				free(first_buf);
+				free(ind_buf);
+				return -1;
+			}
+			ind_buf[second_index] = data_blk;
+			if (ext4_write_block(second_blk, ind_buf) < 0) {
+				free(first_buf);
+				free(ind_buf);
+				return -1;
+			}
+			*out_block = data_blk;
+			if (is_new) {
+				*is_new = 1;
+			}
+		} else {
+			*out_block = ind_buf[second_index];
+			if (is_new) {
+				*is_new = 0;
+			}
+		}
+
+		free(first_buf);
+		free(ind_buf);
+		return 0;
+	}
+}
+
 /* 普通文件操作 */
 
 static int ext4_file_open(struct inode *inode, struct file *file)
@@ -96,8 +319,11 @@ static ssize_t ext4_file_read(struct file *file, char *buf, size_t count, loff_t
 		size_t to_copy;
 		int ret;
 
-		if (block_idx >= 12) break;
-		blocknr = ei->i_block[block_idx];
+		/* 通过直接块 + 间接块映射获取数据块号（不分配新块） */
+		if (ext4_get_data_block(inode, block_idx, 0, &blocknr, NULL) < 0) {
+			free(block_buf);
+			return -1;
+		}
 		if (blocknr == 0) break;
 		ret = ext4_read_block(blocknr, block_buf);
 		if (ret < 0) { free(block_buf); return -1; }
@@ -135,13 +361,16 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 		uint32_t blocknr;
 		size_t to_copy;
 		int ret;
+		int is_new = 0;
 
-		if (block_idx >= 12) break;
-		blocknr = ei->i_block[block_idx];
-		if (blocknr == 0) {
-			blocknr = ext4_new_block(sb);
-			if (blocknr == 0) break;
-			ei->i_block[block_idx] = blocknr;
+		/* 获取（必要时分配）数据块号，支持间接块 */
+		if (ext4_get_data_block(inode, block_idx, 1, &blocknr, &is_new) < 0) {
+			free(block_buf);
+			return -1;
+		}
+		if (blocknr == 0) break;
+		if (is_new) {
+			/* 新分配的数据块，先清零 */
 			memset(block_buf, 0, block_size);
 		} else {
 			ret = ext4_read_block(blocknr, block_buf);
