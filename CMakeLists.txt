@@ -49,7 +49,6 @@ set(KERNEL_SOURCES
     drivers/rtc.cpp
     kernel/interrupts/interrupts.cpp
     kernel/sched/multitasking.cpp
-    kernel/sched/tasks.cpp
     kernel/syscall.cpp
     drivers/base/driver.cpp
     drivers/input/keyboard.cpp
