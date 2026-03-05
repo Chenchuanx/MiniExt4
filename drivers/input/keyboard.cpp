@@ -280,8 +280,11 @@ uint32_t KeyboardDriver::HandleInterrupt(uint32_t esp)
     case 0x5B:
         break;
     case 0x0E:
-        //printf("\b");
-        handler->OnKeyDown('\b');
+        // 仅在缓冲区中有可删除字符时才处理退格，防止删掉提示符
+        if (kb_buffer.count > 0)
+        {
+            handler->OnKeyDown('\b');
+        }
         break;
     default:
         if (key < 0x80) 

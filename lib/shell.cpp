@@ -3,6 +3,10 @@
 #include <lib/console.h>
 #include <lib/syscall.h>
 
+// Shell 提示符常量
+const int8_t SHELL_PROMPT[] = "ChenYingXing:>";
+const uint8_t SHELL_PROMPT_LEN = sizeof(SHELL_PROMPT) - 1;
+
 // 字符串比较函数
 int8_t strcmp(const int8_t * src, const int8_t * dest)
 {
@@ -96,7 +100,7 @@ void simpleShell(const char c, KeyboardDriver * pKeyDriver)
                 sysPrintf("unknow command\n");
             }
         }
-        sysPrintf("ChenYingXing:>");
+        sysPrintf(SHELL_PROMPT);
     }
 }
 

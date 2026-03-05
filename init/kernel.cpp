@@ -95,7 +95,7 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
     }
 
     // 显示Shell提示符
-    printf("ChenYingXing:>");
+    printf(SHELL_PROMPT);
 
     // 主循环
     while(1);
