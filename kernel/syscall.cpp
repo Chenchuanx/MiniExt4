@@ -1,6 +1,6 @@
 # include <kernel/syscalls.h>
 # include <lib/console.h>
-# include <kernel/time.h>
+# include <drivers/rtc.h>
 # include <linux/fs.h>
 
 static int sys_ls_filldir(void *ctx, const char *name, int name_len,
@@ -55,8 +55,18 @@ uint32_t SyscallHandler::HandleInterrupt(uint32_t esp)
         printf((int8_t*)cpu->ebx);
         break;
     case SYS_TIME:
-        time();
+    {
+        rtc_time t{};
+        rtc_read_time(&t);
+
+        printfHex(t.hour);
+        printf((int8_t*)":");
+        printfHex(t.minute);
+        printf((int8_t*)":");
+        printfHex(t.second);
+        printf((int8_t*)"\n");
         break;
+    }
     case SYS_PWD:
     {
         char buf[256];

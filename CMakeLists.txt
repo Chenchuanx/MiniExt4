@@ -46,16 +46,17 @@ set(KERNEL_SOURCES
     fs/ext4/dir.c
     fs/ext4/file.c
     drivers/ata.cpp
+    drivers/rtc.cpp
     kernel/interrupts/interrupts.cpp
     kernel/sched/multitasking.cpp
     kernel/sched/tasks.cpp
     kernel/syscall.cpp
-    kernel/time.cpp
     drivers/base/driver.cpp
     drivers/input/keyboard.cpp
     drivers/input/mouse.cpp
     drivers/input/handlers.cpp
     lib/console.cpp
+    lib/syscall.cpp
     lib/shell.cpp
 )
 
