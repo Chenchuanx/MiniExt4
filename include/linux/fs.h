@@ -63,6 +63,16 @@ struct dentry *mount_bdev(struct file_system_type *fs_type,
 			  int (*fill_super)(struct super_block *, void *));
 void deactivate_super(struct super_block *sb);
 
+/* 获取当前根超级块（简化：只有一个挂载点） */
+struct super_block *vfs_get_root_sb(void);
+
+/* 目录遍历与 ls 封装 */
+int vfs_iterate_dir(struct dentry *dentry, void *dirent, filldir_t filldir);
+int vfs_ls(const char *path, void *dirent, filldir_t filldir);
+int vfs_getcwd(char *buf, int buf_len);
+int vfs_mkdir(const char *path, umode_t mode);
+int vfs_chdir(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

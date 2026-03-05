@@ -5,6 +5,14 @@
 #include <kernel/interrupts.h>
 #include <kernel/multitasking.h>
 
+// 系统调用号定义（供内核和 Shell 共同使用）
+static const uint32_t SYS_WRITE = 0;  // 核心：向控制台输出字符串
+static const uint32_t SYS_TIME  = 1;  // 时间：显示当前时间
+static const uint32_t SYS_PWD   = 2;  // 文件系统：显示当前工作目录
+static const uint32_t SYS_LS    = 3;  // 文件系统：列出当前目录内容
+static const uint32_t SYS_MKDIR = 4;  // 文件系统：创建目录（简化版，仅根目录下）
+static const uint32_t SYS_CHDIR = 5;  // 文件系统：改变当前工作目录
+
 class SyscallHandler : public InterruptHandler
 {
 public:

@@ -23,7 +23,7 @@ set(KERNEL_CXX_FLAGS
     -fno-builtin
     -fno-rtti
     -fno-exceptions
-    -fno-leading-underscore
+    
 )
 
 # 添加所有源文件（参考Linux内核结构）
@@ -34,6 +34,7 @@ set(KERNEL_SOURCES
     mm/gdt.cpp
     lib/port.cpp
     fs/super.c
+    fs/dir.c
     fs/inode.c
     fs/dcache.c
     fs/namei.c

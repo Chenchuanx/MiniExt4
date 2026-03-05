@@ -27,6 +27,9 @@ static void *simple_memset(void *s, int c, size_t n)
 /* 超级块链表头 */
 static struct list_head super_blocks = { &super_blocks, &super_blocks };
 
+/* 当前根超级块（简化：只挂载一个文件系统） */
+static struct super_block *vfs_root_sb = (struct super_block *)NULL;
+
 /* 文件系统类型链表（简化版全局链表） */
 static struct file_system_type *g_filesystems = (struct file_system_type *)NULL;
 
@@ -81,6 +84,11 @@ struct dentry *get_sb_bdev(struct file_system_type *fs_type,
 	/* 添加到超级块链表 */
 	list_add(&sb->s_list, &super_blocks);
 	
+	/* 记录根超级块（当前仅支持单一挂载） */
+	if (vfs_root_sb == NULL) {
+		vfs_root_sb = sb;
+	}
+	
 	/* 获取根 inode（通过超级块操作） */
 	if (!sb->s_op || !sb->s_op->alloc_inode) {
 		printf("super_operations not set\n");
@@ -98,6 +106,26 @@ struct dentry *get_sb_bdev(struct file_system_type *fs_type,
 	
 	printf("root dentry not set by fill_super\n");
 	return NULL;
+}
+
+/**
+ * vfs_get_root_sb - 获取当前根超级块
+ * 
+ * 简化版：返回第一个挂载的超级块
+ */
+struct super_block *vfs_get_root_sb(void)
+{
+	if (vfs_root_sb) {
+		return vfs_root_sb;
+	}
+	
+	if (!list_empty(&super_blocks)) {
+		struct super_block *sb = list_entry(super_blocks.next, struct super_block, s_list);
+		vfs_root_sb = sb;
+		return sb;
+	}
+	
+	return (struct super_block *)NULL;
 }
 
 /**
