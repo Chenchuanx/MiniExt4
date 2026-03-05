@@ -1,7 +1,7 @@
 #include <lib/shell.h>
 #include <drivers/keyboard.h>
-#include <kernel/syscalls.h>
 #include <lib/console.h>
+#include <lib/syscall.h>
 
 // 字符串比较函数
 int8_t strcmp(const int8_t * src, const int8_t * dest)
@@ -12,42 +12,6 @@ int8_t strcmp(const int8_t * src, const int8_t * dest)
         ++dest;
     }
     return *src - *dest;
-}
-
-// 系统调用：打印字符串
-void sysprintf(const int8_t * str)
-{
-    __asm__("int $0x80": : "a" (SYS_WRITE), "b" (str));
-}
-
-// 系统调用：显示时间
-void systime()
-{
-    __asm__ ("int $0x80": : "a" (SYS_TIME));
-}
-
-// 系统调用：显示当前工作目录（pwd）
-static void syspwd()
-{
-    __asm__ ("int $0x80": : "a" (SYS_PWD));
-}
-
-// 系统调用：列出当前目录内容（ls）
-static void sysls()
-{
-    __asm__ ("int $0x80": : "a" (SYS_LS), "b" (0));
-}
-
-// 系统调用：创建目录（mkdir）
-static void sysmkdir(const int8_t *path)
-{
-    __asm__ ("int $0x80": : "a" (SYS_MKDIR), "b" (path));
-}
-
-// 系统调用：改变当前工作目录（cd / chdir）
-static void syschdir(const int8_t *path)
-{
-    __asm__ ("int $0x80": : "a" (SYS_CHDIR), "b" (path));
 }
 
 // 命令解析辅助：匹配关键字 + 可选参数
@@ -94,16 +58,16 @@ void simpleShell(const char c, KeyboardDriver * pKeyDriver)
 
         if (strcmp(cmd, "time") == 0)
         {
-            systime();
+            sysTime();
         }
         else if (strcmp(cmd, "pwd") == 0)
         {
-            syspwd();
+            sysPwd();
         }
         else if (strcmp(cmd, "ls") == 0)
         {
             // 简化版：只支持列出当前目录（当前实现为根目录）
-            sysls();
+            sysLs();
         }
         else
         {
@@ -113,26 +77,26 @@ void simpleShell(const char c, KeyboardDriver * pKeyDriver)
             if (match_command_with_arg(cmd, "mkdir", &arg))
             {
                 if (!arg) {
-                    sysprintf((int8_t*)"mkdir: missing operand\n");
+                    sysPrintf((int8_t*)"mkdir: missing operand\n");
                 } else {
-                    sysmkdir(arg);
+                    sysMkdir(arg);
                 }
             }
             // cd 命令：支持 "cd /path" 或 "cd name"
             else if (match_command_with_arg(cmd, "cd", &arg))
             {
                 if (!arg) {
-                    sysprintf((int8_t*)"cd: missing operand\n");
+                    sysPrintf((int8_t*)"cd: missing operand\n");
                 } else {
-                    syschdir(arg);
+                    sysChdir(arg);
                 }
             }
             else if (cmd[0] != '\0')
             {
-                sysprintf("unknow command\n");
+                sysPrintf("unknow command\n");
             }
         }
-        sysprintf("ChenYingXing:>");
+        sysPrintf("ChenYingXing:>");
     }
 }
 

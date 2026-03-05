@@ -13,7 +13,7 @@
 #include <fs/ext4/ext4.h>
 
 // 构造函数类型定义
-typedef void (*constructor)();
+using constructor = void (*)();
 extern constructor start_ctors;
 extern constructor end_ctors;
 
@@ -24,12 +24,12 @@ extern "C" void callConstructors()
         (*i)();
 }
 
-// 系统调用：打印字符串（外部声明）
-extern void sysprintf(const int8_t * str);
-
 // 内核主函数
-extern "C" void kernelMain(void * multiboo_structure, int32_t magicnumber)
+extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
 {
+    // 避免未使用参数的警告（暂未使用 multiboot 结构和 magic number）
+    (void)multiboot_structure;
+    (void)magic_number;
     // 设置光标到第15行
     setCursorPosition(0, 14);
     
@@ -40,10 +40,10 @@ extern "C" void kernelMain(void * multiboo_structure, int32_t magicnumber)
     GlobalDescriptorTable gdt;
 
     // 初始化任务管理器
-    TaskManager taskManger;
+    TaskManager taskManager;
 
     // 初始化中断管理器
-    InterruptManager interrupts(&gdt, &taskManger);
+    InterruptManager interrupts(&gdt, &taskManager);
 
     // 初始化系统调用处理器
     SyscallHandler syscalls(&interrupts);
@@ -95,7 +95,7 @@ extern "C" void kernelMain(void * multiboo_structure, int32_t magicnumber)
     }
 
     // 显示Shell提示符
-    sysprintf("ChenYingXing:>");
+    printf("ChenYingXing:>");
 
     // 主循环
     while(1);

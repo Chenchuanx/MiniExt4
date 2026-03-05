@@ -5,7 +5,7 @@
 void time();
 
 // 系统调用：显示时间
-void systime();
+void sysTime();
 
 #endif
 
