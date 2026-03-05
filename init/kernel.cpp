@@ -30,8 +30,6 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
     // 避免未使用参数的警告（暂未使用 multiboot 结构和 magic number）
     (void)multiboot_structure;
     (void)magic_number;
-    // 设置光标到第15行
-    setCursorPosition(0, 14);
     
     // 显示启动信息
     printf("Hello Ext4 World!\n");

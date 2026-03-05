@@ -7,9 +7,6 @@
 extern "C" {
 #endif
 
-// 设置VGA硬件光标位置
-void setCursorPosition(uint8_t x, uint8_t y);
-
 // 向屏幕输出字符串
 void printf(const int8_t * str);
 

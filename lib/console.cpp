@@ -3,41 +3,29 @@
 
 extern "C" {
 
-// 设置VGA硬件光标位置
-void setCursorPosition(uint8_t x, uint8_t y)
-{
-    uint16_t position = y * 80 + x;
-    
-    // VGA光标控制寄存器
-    Port8Bit indexPort(0x3D4);  // 索引寄存器
-    Port8Bit dataPort(0x3D5);   // 数据寄存器
-    
-    // 设置光标位置低字节
-    indexPort.Write(0x0F);
-    dataPort.Write((uint8_t)(position & 0xFF));
-    
-    // 设置光标位置高字节
-    indexPort.Write(0x0E);
-    dataPort.Write((uint8_t)((position >> 8) & 0xFF));
-}
-
 void printf(const int8_t * str)
 {
     static int16_t * VideoMemory = (int16_t*) 0xb8000;
     static int8_t x = 0, y = 14;  // 从第15行开始（索引14）
-    
+
+    // 先恢复上一个光标位置的正常颜色（灰字黑底：0x07）
+    VideoMemory[80 * y + x] = (VideoMemory[80 * y + x] & 0x00FF) | 0x0700;
+
+    // 处理退格：更新坐标 + 擦除字符，然后重新绘制软光标
     if (str[0] == '\b')
-    {   
+    {
         --x;
         if (x < 0)
         {
             x = 0;
         }
-        VideoMemory[80 * y + x] = 0x0700;  // 清空字符，保留背景色
-        setCursorPosition(x, y);
+        VideoMemory[80 * y + x] = 0x0700;  // 清空字符，灰字黑底
+
+        // 在新位置绘制软光标（反色：白底黑字 0x70）
+        VideoMemory[80 * y + x] = (VideoMemory[80 * y + x] & 0x00FF) | 0x7000;
         return;
     }
-    
+
     for(int32_t i = 0; str[i] != '\0'; ++i)
     {
         switch(str[i])
@@ -77,9 +65,9 @@ void printf(const int8_t * str)
             y = 24;
         }
     }
-    
-    // 更新硬件光标位置
-    setCursorPosition(x, y);
+
+    // 在当前 (x, y) 位置绘制软光标（白色块：白底黑字）
+    VideoMemory[80 * y + x] = (VideoMemory[80 * y + x] & 0x00FF) | 0x7000;
 }
 
 void printfHex(const uint8_t num)
