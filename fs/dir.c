@@ -14,7 +14,7 @@
 static struct dentry *vfs_cwd = (struct dentry *)0;
 
 /* 内部辅助：获取当前工作目录 dentry，若未初始化则默认为根目录 */
-static struct dentry *vfs_get_cwd_dentry(void)
+struct dentry *vfs_get_cwd_dentry(void)
 {
 	struct super_block *sb = vfs_get_root_sb();
 

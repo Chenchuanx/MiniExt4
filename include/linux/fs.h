@@ -66,7 +66,12 @@ void deactivate_super(struct super_block *sb);
 /* 获取当前根超级块（简化：只有一个挂载点） */
 struct super_block *vfs_get_root_sb(void);
 
-/* 目录遍历与 ls 封装 */
+/* 虚拟文件系统操作 */
+struct dentry *vfs_get_cwd_dentry(void);
+int vfs_open(const char *path, int flags, int mode);
+int vfs_close(int fd);
+int vfs_getdents(int fd, char *dirent, unsigned int count);
+
 int vfs_iterate_dir(struct dentry *dentry, void *dirent, filldir_t filldir);
 int vfs_ls(const char *path, void *dirent, filldir_t filldir);
 int vfs_getcwd(char *buf, int buf_len);

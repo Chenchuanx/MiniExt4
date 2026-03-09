@@ -11,5 +11,9 @@ void sysLs();
 void sysMkdir(const int8_t *path);
 void sysChdir(const int8_t *path);
 
+int sysOpen(const char *path, int flags, int mode);
+int sysClose(int fd);
+int sysGetdents(int fd, void *dirent, unsigned int count);
+
 #endif
 

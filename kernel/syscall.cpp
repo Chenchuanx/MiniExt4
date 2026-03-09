@@ -3,37 +3,6 @@
 # include <drivers/rtc.h>
 # include <linux/fs.h>
 
-static int sys_ls_filldir(void *ctx, const char *name, int name_len,
-                          loff_t off, u64 ino, unsigned type)
-{
-    (void)ctx;
-    (void)off;
-    (void)ino;
-    (void)type;
-
-    /* 跳过 "." 和 ".." */
-    if ((name_len == 1 && name[0] == '.') ||
-        (name_len == 2 && name[0] == '.' && name[1] == '.')) {
-        return 0;
-    }
-
-    int8_t buf[256];
-    int len = name_len < 255 ? name_len : 255;
-    for (int i = 0; i < len; i++) {
-        buf[i] = (int8_t)name[i];
-    }
-    buf[len] = '\0';
-
-    printf(buf);
-    printf((int8_t*)"\n");
-    return 0;
-}
-
-static int sys_ls_do(const char *path)
-{
-    return vfs_ls(path, nullptr, (filldir_t)sys_ls_filldir);
-}
-
 SyscallHandler::SyscallHandler(InterruptManager * interruptManager)
     : InterruptHandler(0x80, interruptManager)
 {
@@ -97,13 +66,27 @@ uint32_t SyscallHandler::HandleInterrupt(uint32_t esp)
         }
         break;
     }
-    case SYS_LS:
+    case SYS_OPEN:
     {
-        // 简化版：忽略寄存器参数，只列出当前目录（当前实现为根目录）
-        int ret = sys_ls_do(nullptr);
-        if (ret < 0) {
-            printf((int8_t*)"ls: cannot access path\n");
-        }
+        const char *path = (const char *)cpu->ebx;
+        int flags = (int)cpu->ecx;
+        int mode = (int)cpu->edx;
+        cpu->eax = vfs_open(path, flags, mode);
+        break;
+    }
+    case SYS_CLOSE:
+    {
+        int fd = (int)cpu->ebx;
+        cpu->eax = vfs_close(fd);
+        break;
+    }
+    case SYS_GETDENTS:
+    {
+        int fd = (int)cpu->ebx;
+        char *dirent = (char *)cpu->ecx;
+        unsigned int count = (unsigned int)cpu->edx;
+
+        cpu->eax = vfs_getdents(fd, dirent, count);
         break;
     }
     default:
