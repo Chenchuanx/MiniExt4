@@ -3,17 +3,17 @@
 
 #include <linux/types.h>
 
-// 用户态系统调用封装接口
+/* 系统调用 */
 void sysPrintf(const int8_t *str);
 void sysTime();
-void sysPwd();
-void sysLs();
-void sysMkdir(const int8_t *path);
-void sysChdir(const int8_t *path);
 
+/* 文件系统 */
 int sysOpen(const char *path, int flags, int mode);
 int sysClose(int fd);
 int sysGetdents(int fd, void *dirent, unsigned int count);
+int sysGetcwd(char *buf, int size);
+int sysMkdir(const int8_t *path);
+int sysChdir(const int8_t *path);
 
 #endif
 

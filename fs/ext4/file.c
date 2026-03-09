@@ -420,15 +420,26 @@ struct ext4_readdir_ctx {
 	void *dirent;
 	filldir_t filldir;
 	loff_t offset;
+	loff_t start_pos;
 };
 
 static int ext4_readdir_fill(void *ctx, const char *name, int name_len,
 			     unsigned long ino, unsigned int type)
 {
 	struct ext4_readdir_ctx *rctx = (struct ext4_readdir_ctx *)ctx;
+	
+	if (rctx->offset < rctx->start_pos) {
+		rctx->offset++;
+		return 0;
+	}
+
 	int r = rctx->filldir(rctx->dirent, name, name_len, rctx->offset, (u64)ino, type);
+	if (r != 0) {
+		return 1;
+	}
+	
 	rctx->offset++;
-	return r != 0 ? 1 : 0;
+	return 0;
 }
 
 static int ext4_dir_readdir(struct file *file, void *dirent, filldir_t filldir)
@@ -437,9 +448,11 @@ static int ext4_dir_readdir(struct file *file, void *dirent, filldir_t filldir)
 	struct ext4_readdir_ctx ctx = {
 		.dirent = dirent,
 		.filldir = filldir,
-		.offset = file->f_pos,
+		.offset = 0,
+		.start_pos = file->f_pos,
 	};
 	int r = ext4_dir_foreach(inode, &ctx, ext4_readdir_fill);
+	file->f_pos = ctx.offset;
 	return r < 0 ? -1 : 0;
 }
 

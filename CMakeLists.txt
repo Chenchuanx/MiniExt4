@@ -57,7 +57,8 @@ set(KERNEL_SOURCES
     drivers/input/handlers.cpp
     lib/printf.cpp
     lib/syscall.cpp
-    kernel/kcli.cpp
+    lib/string.cpp
+    usr/shell.cpp
 )
 
 # 启用汇编语言支持

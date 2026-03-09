@@ -13,10 +13,12 @@ void sysTime()
     __asm__("int $0x80" : : "a"(SYS_TIME));
 }
 
-// 系统调用：显示当前工作目录（pwd）
-void sysPwd()
+// 系统调用：获取当前工作目录
+int sysGetcwd(char *buf, int size)
 {
-    __asm__("int $0x80" : : "a"(SYS_PWD));
+    int ret;
+    __asm__("int $0x80" : "=a"(ret) : "a"(SYS_GETCWD), "b"(buf), "c"(size));
+    return ret;
 }
 
 // 系统调用：打开文件/目录
@@ -43,56 +45,19 @@ int sysGetdents(int fd, void *dirent, unsigned int count)
     return ret;
 }
 
-#include <linux/dirent.h>
-
-// 辅助函数：计算字符串长度
-static int str_len(const char* s) {
-    int len = 0;
-    while(s[len]) len++;
-    return len;
-}
-
-// 系统调用：列出当前目录内容（ls）
-void sysLs()
-{
-    int fd = sysOpen(".", 0, 0);
-    if (fd < 0) {
-        sysPrintf((int8_t*)"ls: cannot access path\n");
-        return;
-    }
-
-    char buf[1024];
-    int nread;
-
-    while ((nread = sysGetdents(fd, buf, sizeof(buf))) > 0) {
-        int bpos = 0;
-        while (bpos < nread) {
-            struct linux_dirent *d = (struct linux_dirent *)(buf + bpos);
-            
-            // 跳过 "." 和 ".."
-            int name_len = str_len(d->d_name);
-            if (!((name_len == 1 && d->d_name[0] == '.') || 
-                  (name_len == 2 && d->d_name[0] == '.' && d->d_name[1] == '.'))) {
-                sysPrintf((int8_t*)d->d_name);
-                sysPrintf((int8_t*)"\n");
-            }
-
-            bpos += d->d_reclen;
-        }
-    }
-
-    sysClose(fd);
-}
-
 // 系统调用：创建目录（mkdir）
-void sysMkdir(const int8_t *path)
+int sysMkdir(const int8_t *path)
 {
-    __asm__("int $0x80" : : "a"(SYS_MKDIR), "b"(path));
+    int ret;
+    __asm__("int $0x80" : "=a"(ret) : "a"(SYS_MKDIR), "b"(path));
+    return ret;
 }
 
 // 系统调用：改变当前工作目录（cd / chdir）
-void sysChdir(const int8_t *path)
+int sysChdir(const int8_t *path)
 {
-    __asm__("int $0x80" : : "a"(SYS_CHDIR), "b"(path));
+    int ret;
+    __asm__("int $0x80" : "=a"(ret) : "a"(SYS_CHDIR), "b"(path));
+    return ret;
 }
 

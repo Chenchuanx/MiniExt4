@@ -72,8 +72,6 @@ int vfs_open(const char *path, int flags, int mode);
 int vfs_close(int fd);
 int vfs_getdents(int fd, char *dirent, unsigned int count);
 
-int vfs_iterate_dir(struct dentry *dentry, void *dirent, filldir_t filldir);
-int vfs_ls(const char *path, void *dirent, filldir_t filldir);
 int vfs_getcwd(char *buf, int buf_len);
 int vfs_mkdir(const char *path, umode_t mode);
 int vfs_chdir(const char *path);

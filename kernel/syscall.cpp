@@ -36,34 +36,16 @@ uint32_t SyscallHandler::HandleInterrupt(uint32_t esp)
         printf((int8_t*)"\n");
         break;
     }
-    case SYS_PWD:
-    {
-        char buf[256];
-        int ret = vfs_getcwd(buf, sizeof(buf));
-        if (ret == 0) {
-            printf((int8_t*)buf);
-            printf((int8_t*)"\n");
-        } else {
-            printf((int8_t*)"pwd: error\n");
-        }
-        break;
-    }
     case SYS_CHDIR:
     {
         const char *path = (const char *)cpu->ebx;
-        int ret = vfs_chdir(path);
-        if (ret != 0) {
-            printf((int8_t*)"cd: failed\n");
-        }
+        cpu->eax = vfs_chdir(path);
         break;
     }
     case SYS_MKDIR:
     {
         const char *path = (const char *)cpu->ebx;
-        int ret = vfs_mkdir(path, 0755);
-        if (ret != 0) {
-            printf((int8_t*)"mkdir: failed\n");
-        }
+        cpu->eax = vfs_mkdir(path, 0755);
         break;
     }
     case SYS_OPEN:
@@ -87,6 +69,13 @@ uint32_t SyscallHandler::HandleInterrupt(uint32_t esp)
         unsigned int count = (unsigned int)cpu->edx;
 
         cpu->eax = vfs_getdents(fd, dirent, count);
+        break;
+    }
+    case SYS_GETCWD:
+    {
+        char *buf = (char *)cpu->ebx;
+        int size = (int)cpu->ecx;
+        cpu->eax = vfs_getcwd(buf, size);
         break;
     }
     default:
