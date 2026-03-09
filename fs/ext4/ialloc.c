@@ -6,7 +6,7 @@
 
 #include <linux/fs.h>
 #include <fs/ext4/ext4.h>
-#include <lib/console.h>
+#include <lib/printf.h>
 
 #ifndef NULL
 #define NULL ((void *)0)

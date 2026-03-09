@@ -4,7 +4,7 @@
 #include <linux/fs.h>
 #include <fs/fs_types.h>
 #include <fs/ext4/ext4.h>
-#include <lib/console.h>
+#include <lib/printf.h>
 #include <fs/dentry.h>  /* 使用 VFS dentry 接口 */
 
 #ifndef NULL

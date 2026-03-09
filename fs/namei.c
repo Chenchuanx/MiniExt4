@@ -8,7 +8,7 @@
 
 #include <linux/fs.h>
 #include <fs/dentry.h>
-#include <lib/console.h>
+#include <lib/printf.h>
 
 #ifndef NULL
 #define NULL ((void *)0)

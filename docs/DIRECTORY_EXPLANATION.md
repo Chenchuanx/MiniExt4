@@ -49,6 +49,7 @@ kernel/
 │   ├── multitasking.cpp # 任务管理器
 │   └── tasks.cpp       # 任务实现
 ├── syscall.cpp          # 系统调用处理
+├── kcli.cpp             # Kernel命令行交互
 └── time.cpp            # 时间服务
 ```
 
@@ -108,8 +109,7 @@ drivers/
 
 **文件：**
 - `port.cpp` - I/O端口操作（8位、16位、32位端口读写）
-- `console.cpp` - VGA文本模式控制台输出
-- `shell.cpp` - Shell命令处理
+- `printf.cpp` - VGA文本模式控制台输出
 
 **对应Linux内核：** `linux/lib/`
 
@@ -161,6 +161,7 @@ include/
 │   ├── multitasking.h  # 任务调度
 │   ├── tasks.h         # 任务定义
 │   ├── syscalls.h      # 系统调用
+│   ├── kcli.h          # Kernel命令行
 │   └── time.h          # 时间服务
 ├── mm/                 # 内存管理头文件
 │   └── gdt.h           # 全局描述符表
@@ -171,8 +172,7 @@ include/
 │   └── handlers.h      # 事件处理
 └── lib/                # 库函数头文件
     ├── port.h          # I/O端口
-    ├── console.h       # 控制台
-    └── shell.h         # Shell
+    └── printf.h       # 控制台
 ```
 
 **对应Linux内核：** `linux/include/`

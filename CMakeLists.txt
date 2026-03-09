@@ -54,9 +54,9 @@ set(KERNEL_SOURCES
     drivers/input/keyboard.cpp
     drivers/input/mouse.cpp
     drivers/input/handlers.cpp
-    lib/console.cpp
+    lib/printf.cpp
     lib/syscall.cpp
-    lib/shell.cpp
+    kernel/kcli.cpp
 )
 
 # 启用汇编语言支持

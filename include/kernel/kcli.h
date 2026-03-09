@@ -1,5 +1,5 @@
-#ifndef __SHELL_H_
-#define __SHELL_H_
+#ifndef __KCLI_H_
+#define __KCLI_H_
 
 #include <linux/types.h>
 

@@ -1,4 +1,4 @@
-#include <lib/console.h>
+#include <lib/printf.h>
 #include <lib/port.h>
 
 extern "C" {

@@ -1,5 +1,5 @@
 #include <drivers/keyboard.h>
-#include <lib/console.h>
+#include <lib/printf.h>
 void simpleShell(const char c, KeyboardDriver * pKeyDriver);
 
 KeyboardEventHandler::KeyboardEventHandler()

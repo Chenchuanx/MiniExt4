@@ -1,5 +1,5 @@
 #include <drivers/handlers.h>
-#include <lib/console.h>
+#include <lib/printf.h>
 
 // 键盘事件处理器：将按键输出到控制台
 void PrintfKeyboardEventHandler::OnKeyDown(int8_t c)

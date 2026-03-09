@@ -1,5 +1,5 @@
 # include <kernel/syscalls.h>
-# include <lib/console.h>
+# include <lib/printf.h>
 # include <drivers/rtc.h>
 # include <linux/fs.h>
 

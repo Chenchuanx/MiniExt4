@@ -1,5 +1,5 @@
-#ifndef __CONSOLE_H_
-#define __CONSOLE_H_
+#ifndef __PRINTF_H_
+#define __PRINTF_H_
 
 #include <linux/types.h>
 

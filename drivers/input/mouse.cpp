@@ -1,5 +1,5 @@
 #include <drivers/mouse.h>
-#include <lib/console.h>
+#include <lib/printf.h>
 
 MouseEventHandler::MouseEventHandler() { }
 

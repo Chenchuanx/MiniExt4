@@ -6,7 +6,7 @@
 
 #include <linux/fs.h>
 #include <fs/fs_types.h>
-#include <lib/console.h>
+#include <lib/printf.h>
 
 #ifndef NULL
 #define NULL ((void *)0)

@@ -1,6 +1,6 @@
-#include <lib/shell.h>
+#include <kernel/kcli.h>
 #include <drivers/keyboard.h>
-#include <lib/console.h>
+#include <lib/printf.h>
 #include <lib/syscall.h>
 
 // Shell 提示符常量

@@ -5,8 +5,8 @@
 #include <drivers/driver.h>
 #include <drivers/mouse.h>
 #include <kernel/syscalls.h>
-#include <lib/console.h>
-#include <lib/shell.h>
+#include <lib/printf.h>
+#include <kernel/kcli.h>
 #include <drivers/handlers.h>
 #include <drivers/ata.h>
 #include <linux/fs.h>

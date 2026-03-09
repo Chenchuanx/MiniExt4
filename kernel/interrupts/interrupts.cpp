@@ -1,6 +1,6 @@
 # include <kernel/interrupts.h>
 
-#include <lib/console.h>
+#include <lib/printf.h>
 
 InterruptHandler::InterruptHandler(uint8_t interruptNumber, InterruptManager * interruptManager)
     : interruptNumber(interruptNumber), interruptManager(interruptManager)
