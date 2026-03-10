@@ -71,6 +71,7 @@ struct dentry *vfs_get_cwd_dentry(void);
 int vfs_open(const char *path, int flags, int mode);
 int vfs_close(int fd);
 int vfs_getdents(int fd, char *dirent, unsigned int count);
+int vfs_write(int fd, const char *buf, size_t count);
 
 int vfs_getcwd(char *buf, int buf_len);
 int vfs_mkdir(const char *path, umode_t mode);

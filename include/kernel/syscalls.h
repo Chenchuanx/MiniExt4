@@ -14,6 +14,7 @@ static const uint32_t SYS_CHDIR = 4;  // 文件系统：改变当前工作目录
 static const uint32_t SYS_CLOSE = 5;  // 文件系统：关闭文件/目录
 static const uint32_t SYS_GETDENTS = 6; // 文件系统：获取目录项
 static const uint32_t SYS_GETCWD  = 7;  // 文件系统：获取当前工作目录
+static const uint32_t SYS_FWRITE = 8;   // 文件系统：向文件写入数据
 
 class SyscallHandler : public InterruptHandler
 {

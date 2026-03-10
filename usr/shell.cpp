@@ -84,6 +84,94 @@ static void cmd_touch(const int8_t *arg) {
     sysClose(fd);
 }
 
+// echo 命令：
+// 1) 直接输出：      echo hello world
+// 2) 重定向到文件：  echo hello > file
+static void cmd_echo(const int8_t *arg) {
+    if (!arg) {
+        // 与 Linux 一致，输出一个换行
+        sysPrintf((int8_t*)"\n");
+        return;
+    }
+
+    const char *p = (const char *)arg;
+
+    // 先检查有没有重定向符号 '>'
+    const char *redir = 0;
+    for (const char *q = p; *q != '\0'; ++q) {
+        if (*q == '>') {
+            redir = q;
+            break;
+        }
+    }
+
+    if (!redir) {
+        // 没有重定向，直接把整段参数原样输出并加换行
+        sysPrintf((int8_t*)p);
+        sysPrintf((int8_t*)"\n");
+        return;
+    }
+
+    // 有重定向：左边是内容，右边是文件名
+    // 1) 提取左边内容（去掉尾部空格）
+    char content[256];
+    int clen = 0;
+    const char *left_end = redir;
+    // 去掉 '>' 左侧末尾空格
+    while (left_end > p && (*(left_end - 1) == ' ' || *(left_end - 1) == '\t')) {
+        left_end--;
+    }
+    const char *left = p;
+    while (left < left_end && clen < (int)sizeof(content) - 1) {
+        content[clen++] = *left++;
+    }
+    content[clen] = '\0';
+
+    // 2) 解析右边文件名
+    const char *fname = redir + 1;
+    while (*fname == ' ' || *fname == '\t') {
+        fname++;
+    }
+    if (*fname == '\0') {
+        sysPrintf((int8_t*)"echo: missing filename after '>'\n");
+        return;
+    }
+
+    char filename[256];
+    int flen = 0;
+    while (*fname != '\0' && *fname != ' ' && *fname != '\t' &&
+           flen < (int)sizeof(filename) - 1) {
+        filename[flen++] = *fname++;
+    }
+    filename[flen] = '\0';
+
+    if (flen == 0) {
+        sysPrintf((int8_t*)"echo: invalid filename\n");
+        return;
+    }
+
+    int fd = sysOpen(filename, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) {
+        sysPrintf((int8_t*)"echo: cannot open file\n");
+        return;
+    }
+
+    int written = 0;
+    if (clen > 0) {
+        written = sysFileWrite(fd, content, clen);
+        if (written < 0) {
+            sysPrintf((int8_t*)"echo: write error\n");
+            sysClose(fd);
+            return;
+        }
+    }
+    // 模拟 shell 行为，末尾再写一个换行
+    const char nl = '\n';
+    sysFileWrite(fd, &nl, 1);
+
+    sysClose(fd);
+}
+
 static void cmd_cd(const int8_t *arg) {
     if (!arg) {
         sysPrintf((int8_t*)"cd: missing operand\n");
@@ -112,6 +200,7 @@ static struct shell_command cmd_table[] = {
     {"mkdir", cmd_mkdir},
     {"cd", cmd_cd},
     {"touch", cmd_touch},
+    {"echo", cmd_echo},
     {0, 0}
 };
 

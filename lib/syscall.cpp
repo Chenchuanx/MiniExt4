@@ -61,3 +61,11 @@ int sysChdir(const int8_t *path)
     return ret;
 }
 
+// 系统调用：向文件写入数据
+int sysFileWrite(int fd, const char *buf, int count)
+{
+    int ret;
+    __asm__("int $0x80" : "=a"(ret) : "a"(SYS_FWRITE), "b"(fd), "c"(buf), "d"(count));
+    return ret;
+}
+

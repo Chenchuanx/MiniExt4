@@ -14,6 +14,7 @@ int sysGetdents(int fd, void *dirent, unsigned int count);
 int sysGetcwd(char *buf, int size);
 int sysMkdir(const int8_t *path);
 int sysChdir(const int8_t *path);
+int sysFileWrite(int fd, const char *buf, int count);
 
 #endif
 

@@ -248,3 +248,23 @@ int vfs_getdents(int fd, char *dirent, unsigned int count)
 
     return ctx.written;
 }
+
+int vfs_write(int fd, const char *buf, size_t count)
+{
+    if (fd < 0 || fd >= MAX_FD || !fd_used[fd]) {
+        return -1;
+    }
+
+    struct file *f = &global_fd_table[fd];
+    if (!f->f_op || !f->f_op->write) {
+        return -2;
+    }
+
+    loff_t pos = f->f_pos;
+    ssize_t written = f->f_op->write(f, buf, count, &pos);
+    if (written > 0) {
+        f->f_pos = pos;
+    }
+
+    return (int)written;
+}
