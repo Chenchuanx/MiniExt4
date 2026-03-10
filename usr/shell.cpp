@@ -4,6 +4,7 @@
 #include <lib/syscall.h>
 #include <linux/dirent.h>
 #include <linux/string.h>
+#include <linux/fs.h>
 
 // Shell 提示符常量
 const int8_t SHELL_PROMPT[] = "ChenYingXing:>";
@@ -68,6 +69,21 @@ static void cmd_mkdir(const int8_t *arg) {
     }
 }
 
+static void cmd_touch(const int8_t *arg) {
+    if (!arg) {
+        sysPrintf((int8_t*)"touch: missing operand\n");
+        return;
+    }
+
+    int fd = sysOpen((const char *)arg, O_CREAT | O_WRONLY, 0644);
+    if (fd < 0) {
+        sysPrintf((int8_t*)"touch: failed\n");
+        return;
+    }
+
+    sysClose(fd);
+}
+
 static void cmd_cd(const int8_t *arg) {
     if (!arg) {
         sysPrintf((int8_t*)"cd: missing operand\n");
@@ -95,6 +111,7 @@ static struct shell_command cmd_table[] = {
     {"ls", cmd_ls},
     {"mkdir", cmd_mkdir},
     {"cd", cmd_cd},
+    {"touch", cmd_touch},
     {0, 0}
 };
 
