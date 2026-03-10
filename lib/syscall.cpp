@@ -69,3 +69,11 @@ int sysFileWrite(int fd, const char *buf, int count)
     return ret;
 }
 
+// 系统调用：从文件读取数据
+int sysFileRead(int fd, char *buf, int count)
+{
+    int ret;
+    __asm__("int $0x80" : "=a"(ret) : "a"(SYS_FREAD), "b"(fd), "c"(buf), "d"(count));
+    return ret;
+}
+

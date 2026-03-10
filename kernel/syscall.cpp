@@ -86,6 +86,14 @@ uint32_t SyscallHandler::HandleInterrupt(uint32_t esp)
         cpu->eax = vfs_write(fd, buf, count);
         break;
     }
+    case SYS_FREAD:
+    {
+        int fd = (int)cpu->ebx;
+        char *buf = (char *)cpu->ecx;
+        size_t count = (size_t)cpu->edx;
+        cpu->eax = vfs_read(fd, buf, count);
+        break;
+    }
     default:
         break;
     }

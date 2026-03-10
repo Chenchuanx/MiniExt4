@@ -84,6 +84,35 @@ static void cmd_touch(const int8_t *arg) {
     sysClose(fd);
 }
 
+static void cmd_cat(const int8_t *arg) {
+    if (!arg) {
+        sysPrintf((int8_t*)"cat: missing operand\n");
+        return;
+    }
+
+    const char *path = (const char *)arg;
+    int fd = sysOpen(path, O_RDONLY, 0);
+    if (fd < 0) {
+        sysPrintf((int8_t*)"cat: cannot open file\n");
+        sysPrintf((int8_t*)"\n");
+        return;
+    }
+
+    char buf[256 + 1];
+    int nread;
+    while ((nread = sysFileRead(fd, buf, 256)) > 0) {
+        buf[nread] = '\0';
+        sysPrintf((int8_t*)buf);
+    }
+
+    if (nread < 0) {
+        sysPrintf((int8_t*)"cat: read error\n");
+        sysPrintf((int8_t*)"\n");
+    }
+
+    sysClose(fd);
+}
+
 // echo 命令：
 // 1) 直接输出：      echo hello world
 // 2) 重定向到文件：  echo hello > file
@@ -201,6 +230,7 @@ static struct shell_command cmd_table[] = {
     {"cd", cmd_cd},
     {"touch", cmd_touch},
     {"echo", cmd_echo},
+    {"cat", cmd_cat},
     {0, 0}
 };
 

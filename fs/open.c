@@ -268,3 +268,23 @@ int vfs_write(int fd, const char *buf, size_t count)
 
     return (int)written;
 }
+
+int vfs_read(int fd, char *buf, size_t count)
+{
+    if (fd < 0 || fd >= MAX_FD || !fd_used[fd]) {
+        return -1;
+    }
+
+    struct file *f = &global_fd_table[fd];
+    if (!f->f_op || !f->f_op->read) {
+        return -2;
+    }
+
+    loff_t pos = f->f_pos;
+    ssize_t read_bytes = f->f_op->read(f, buf, count, &pos);
+    if (read_bytes > 0) {
+        f->f_pos = pos;
+    }
+
+    return (int)read_bytes;
+}
