@@ -205,7 +205,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_inodes_count = groups_count * inodes_per_group;
     esb->s_blocks_count_lo = total_blocks;
     esb->s_r_blocks_count_lo = total_blocks / 20;  /* 保留 5% 的块 */
-    esb->s_free_inodes_count = esb->s_inodes_count - EXT4_NUM_RESERVED_INODES;  /* 减去保留 inode */
+    esb->s_free_inodes_count = esb->s_inodes_count - 10;  /* 减去保留 inode */
     /* s_free_blocks_count_lo 会在后面根据实际计算的系统块数更新 */
     esb->s_first_data_block = first_data_block;
     esb->s_log_block_size = (block_size == 1024) ? 0 : (block_size == 2048) ? 1 : 2;  /* 简化 */
