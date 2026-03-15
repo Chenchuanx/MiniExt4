@@ -168,12 +168,15 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     ext4_set_block_size(block_size);
     
     /* 计算文件系统参数 */
-    /* 对于小文件系统，blocks_per_group 不能超过 total_blocks */
-    /* 标准 ext4 使用 32768，但对于小文件系统需要调整 */
-    if (total_blocks < 32768) {
+    /* 每组块数受两处约束：
+     * 1) 块位图只占一个块，最多表示 (block_size * 8) 个块；
+     * 2) 小文件系统时不超过 total_blocks（所有块可在一个组内）。
+     */
+    uint32_t max_blocks_per_group = block_size * 8;  /* 一块位图能表示的块数 */
+    if (total_blocks <= max_blocks_per_group) {
         blocks_per_group = total_blocks;  /* 小文件系统：所有块在一个组 */
     } else {
-        blocks_per_group = 32768;  /* 标准：每组 32768 块 */
+        blocks_per_group = max_blocks_per_group;    /* 按块大小决定的每组上限 */
     }
     inodes_per_group = blocks_per_group / 4;  /* 简化：每 4 块一个 inode */
     groups_count = (total_blocks + blocks_per_group - 1) / blocks_per_group;
@@ -202,7 +205,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_inodes_count = groups_count * inodes_per_group;
     esb->s_blocks_count_lo = total_blocks;
     esb->s_r_blocks_count_lo = total_blocks / 20;  /* 保留 5% 的块 */
-    esb->s_free_inodes_count = esb->s_inodes_count - 10;  /* 减去系统 inode */
+    esb->s_free_inodes_count = esb->s_inodes_count - EXT4_NUM_RESERVED_INODES;  /* 减去保留 inode */
     /* s_free_blocks_count_lo 会在后面根据实际计算的系统块数更新 */
     esb->s_first_data_block = first_data_block;
     esb->s_log_block_size = (block_size == 1024) ? 0 : (block_size == 2048) ? 1 : 2;  /* 简化 */
