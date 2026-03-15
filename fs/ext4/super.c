@@ -435,16 +435,18 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     uint16_t rec_len_1 = (8 + name_len_1 + 3) & ~3;  /* 对齐到 4 字节 */
     de->inode = 2;
     de->rec_len = rec_len_1;
-    de->name_len = name_len_1;
+    de->name_len = (__u8)name_len_1;
+    de->file_type = 2; /* DT_DIR */
     de->name[0] = '.';
-    
+
     /* .. 条目 */
     de = (struct ext4_dir_entry *)((char *)de + rec_len_1);
     uint16_t name_len_2 = 2;
     uint16_t rec_len_2 = ((block_size - rec_len_1) / 4) * 4;  /* 剩余空间，对齐到 4 字节 */
     de->inode = 2;
     de->rec_len = rec_len_2;
-    de->name_len = name_len_2;
+    de->name_len = (__u8)name_len_2;
+    de->file_type = 2; /* DT_DIR */
     de->name[0] = '.';
     de->name[1] = '.';
     

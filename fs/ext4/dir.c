@@ -191,7 +191,7 @@ int ext4_add_entry(struct inode *dir, const struct qstr *name, unsigned long ino
 		while (off + rec_len <= block_size) {
 			struct ext4_dir_entry *de = (struct ext4_dir_entry *)(buf + off);
 			uint16_t d_rec_len = le16_to_cpu(de->rec_len);
-			uint16_t d_name_len = le16_to_cpu(de->name_len);
+			uint16_t d_name_len = (uint16_t)de->name_len; /* on-disk: 1 byte */
 			uint32_t d_ino = le32_to_cpu(de->inode);
 
 			if (d_rec_len == 0) {
@@ -207,14 +207,16 @@ int ext4_add_entry(struct inode *dir, const struct qstr *name, unsigned long ino
 					de = (struct ext4_dir_entry *)((char *)de + rec_len);
 					de->inode = (uint32_t)ino;
 					de->rec_len = (uint16_t)(old_rec - rec_len);
-					de->name_len = (uint16_t)name->len;
+					de->name_len = (__u8)name->len;
+					de->file_type = 0; /* DT_UNKNOWN */
 					if (name->name && name->len > 0)
 						memcpy(de->name, name->name, (size_t)name->len);
 				} else {
 					/* 直接占用整个槽位 */
 					de->inode = (uint32_t)ino;
 					de->rec_len = old_rec;
-					de->name_len = (uint16_t)name->len;
+					de->name_len = (__u8)name->len;
+					de->file_type = 0; /* DT_UNKNOWN */
 					if (name->name && name->len > 0)
 						memcpy(de->name, name->name, (size_t)name->len);
 				}
@@ -277,7 +279,7 @@ int ext4_remove_entry(struct inode *dir, const struct qstr *name)
 		while (off < block_size) {
 			struct ext4_dir_entry *de = (struct ext4_dir_entry *)(buf + off);
 			uint16_t rec_len = le16_to_cpu(de->rec_len);
-			uint16_t name_len = le16_to_cpu(de->name_len);
+			uint16_t name_len = (uint16_t)de->name_len; /* on-disk: 1 byte */
 			uint32_t ino = le32_to_cpu(de->inode);
 
 			if (rec_len == 0) {
@@ -291,6 +293,7 @@ int ext4_remove_entry(struct inode *dir, const struct qstr *name)
 					/* 块内首项：仅将 inode 置 0 */
 					de->inode = 0;
 					de->name_len = 0;
+					de->file_type = 0;
 					ret = ext4_write_block(blocknr, buf);
 				} else {
 					/* 将当前 rec_len 合并到前一项 */
@@ -360,7 +363,7 @@ int ext4_dir_foreach(struct inode *dir, void *ctx,
 		while (off < block_size) {
 			struct ext4_dir_entry *de = (struct ext4_dir_entry *)(buf + off);
 			uint16_t rec_len = le16_to_cpu(de->rec_len);
-			uint16_t name_len = le16_to_cpu(de->name_len);
+			uint16_t name_len = (uint16_t)de->name_len; /* on-disk: 1 byte */
 			uint32_t ino = le32_to_cpu(de->inode);
 
 			if (rec_len == 0) {

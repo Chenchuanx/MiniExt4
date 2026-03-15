@@ -192,12 +192,14 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	de->inode = (uint32_t)ino;
 	de->rec_len = rec1;
 	de->name_len = 1;
+	de->file_type = 2; /* DT_DIR */
 	de->name[0] = '.';
 	de = (struct ext4_dir_entry *)((char *)de + rec1);
 	rec2 = (uint16_t)((block_size - rec1) & ~3);
 	de->inode = dir->i_ino;
 	de->rec_len = rec2;
 	de->name_len = 2;
+	de->file_type = 2; /* DT_DIR */
 	de->name[0] = '.';
 	de->name[1] = '.';
 	ret = ext4_write_block(blocknr, buf);

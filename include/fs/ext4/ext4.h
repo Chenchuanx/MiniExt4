@@ -183,11 +183,12 @@ struct ext4_inode {
 	__le32	i_reserved2;	/* 保留 */
 } __attribute__((packed));
 
-/* Ext4 目录项（on-disk） */
+/* Ext4 目录项（on-disk，与 Linux ext2/ext3/ext4 一致：name_len/file_type 各 1 字节） */
 struct ext4_dir_entry {
 	__le32	inode;		/* Inode 号 */
 	__le16	rec_len;	/* 记录长度 */
-	__le16	name_len;	/* 名称长度 */
+	__u8	name_len;	/* 名称长度（1 字节） */
+	__u8	file_type;	/* 文件类型：DT_UNKNOWN=0, DT_REG=1, DT_DIR=2 等 */
 	char	name[255];	/* 文件名（可变长度） */
 } __attribute__((packed));
 
