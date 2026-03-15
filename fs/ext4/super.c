@@ -6,6 +6,7 @@
 #include <fs/ext4/ext4.h>
 #include <lib/printf.h>
 #include <fs/dentry.h>  /* 使用 VFS dentry 接口 */
+#include <drivers/rtc.h>
 
 #ifndef NULL
 #define NULL ((void *)0)
@@ -214,17 +215,17 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_blocks_per_group = blocks_per_group;
     esb->s_clusters_per_group = blocks_per_group;
     esb->s_inodes_per_group = inodes_per_group;
-    /* 设置时间戳（使用一个合理的固定值，Unix 时间戳，大约 2020-01-01） */
-    uint32_t base_time = 0x5E0D9800;  /* 2020-01-01 00:00:00 UTC */
-    esb->s_mtime = base_time;  /* 挂载时间 */
-    esb->s_wtime = base_time;  /* 写入时间 */
+    /* 设置时间戳（使用 RTC 当前时间） */
+    uint32_t now = rtc_get_unix_time();
+    esb->s_mtime = now;  /* 挂载时间 */
+    esb->s_wtime = now;  /* 写入时间 */
     esb->s_mnt_count = 0;
     esb->s_max_mnt_count = 0xFFFF;  /* 无限制 */
     esb->s_magic = EXT4_SUPER_MAGIC;
     esb->s_state = 1;  /* 文件系统干净 */
     esb->s_errors = 1;  /* 继续 */
     esb->s_minor_rev_level = 0;
-    esb->s_lastcheck = base_time;  /* 最后检查时间 */
+    esb->s_lastcheck = now;  /* 最后检查时间 */
     esb->s_checkinterval = 0;  /* 不强制检查 */
     esb->s_creator_os = 0;  /* Linux */
     esb->s_rev_level = 1;  /* 动态版本 */
@@ -236,7 +237,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_feature_compat = 0;
     esb->s_feature_incompat = 0;
     esb->s_feature_ro_compat = 0;
-    esb->s_mkfs_time = base_time;  /* mkfs 时间 */
+    esb->s_mkfs_time = now;  /* mkfs 时间 */
     esb->s_journal_inum = 0;  /* 无日志 */
     esb->s_journal_dev = 0;  /* 无日志设备 */
     esb->s_last_orphan = 0;  /* 无孤儿 inode */
@@ -398,9 +399,9 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     root_inode->i_uid = 0;
     root_inode->i_size_lo = block_size;
     root_inode->i_size_high = 0;
-    root_inode->i_atime = base_time;
-    root_inode->i_ctime = base_time;
-    root_inode->i_mtime = base_time;
+    root_inode->i_atime = now;
+    root_inode->i_ctime = now;
+    root_inode->i_mtime = now;
     root_inode->i_dtime = 0;
     root_inode->i_gid = 0;
     root_inode->i_links_count = 2;  /* . 和 .. */

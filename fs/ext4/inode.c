@@ -7,6 +7,7 @@
 #include <fs/ext4/ext4.h>
 #include <fs/dentry.h>
 #include <lib/printf.h>
+#include <drivers/rtc.h>
 
 #ifndef NULL
 #define NULL ((void *)0)
@@ -62,7 +63,6 @@ static void simple_free(void *p)
 #define free simple_free
 
 #define EXT4_INODE_SIZE 256
-#define BASE_TIME 0x5E0D9800
 
 /**
  * ext4_lookup - 按名称查找目录项
@@ -112,9 +112,9 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	inode->i_size = 0;
 	inode->i_blocks = 0;
 	inode->i_nlink = 1;
-	inode->i_atime = BASE_TIME;
-	inode->i_mtime = BASE_TIME;
-	inode->i_ctime = BASE_TIME;
+	inode->i_atime = rtc_get_unix_time();
+	inode->i_mtime = inode->i_atime;
+	inode->i_ctime = inode->i_atime;
 	inode->i_sb = sb;
 	ei = (struct ext4_inode_info *)inode->i_private;
 	if (ei) {
@@ -168,9 +168,9 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	inode->i_size = block_size;
 	inode->i_blocks = block_size / 512;
 	inode->i_nlink = 2; /* . 和 .. */
-	inode->i_atime = BASE_TIME;
-	inode->i_mtime = BASE_TIME;
-	inode->i_ctime = BASE_TIME;
+	inode->i_atime = rtc_get_unix_time();
+	inode->i_mtime = inode->i_atime;
+	inode->i_ctime = inode->i_atime;
 	inode->i_sb = sb;
 	ei = (struct ext4_inode_info *)inode->i_private;
 	if (ei) {
