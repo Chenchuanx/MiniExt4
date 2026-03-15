@@ -94,6 +94,12 @@ uint32_t SyscallHandler::HandleInterrupt(uint32_t esp)
         cpu->eax = vfs_read(fd, buf, count);
         break;
     }
+    case SYS_UNLINK:
+    {
+        const char *path = (const char *)cpu->ebx;
+        cpu->eax = vfs_unlink(path);
+        break;
+    }
     default:
         break;
     }

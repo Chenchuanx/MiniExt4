@@ -308,3 +308,65 @@ int vfs_chdir(const char *path)
 	return 0;
 }
 
+/**
+ * vfs_unlink - 删除普通文件
+ *
+ * 仅支持删除非目录类型的文件，路径规则同 vfs_mkdir/vfs_chdir：
+ *   - 以 '/' 开头：从根目录解析
+ *   - 否则：       从当前工作目录解析
+ */
+int vfs_unlink(const char *path)
+{
+	struct super_block *sb;
+	struct dentry *root;
+	struct dentry *cwd;
+	struct dentry *target;
+	struct dentry *parent;
+
+	if (!path || path[0] == '\0') {
+		return -1;
+	}
+
+	sb = vfs_get_root_sb();
+	if (!sb || !sb->s_root || !sb->s_root->d_inode) {
+		return -2;
+	}
+	root = sb->s_root;
+	cwd  = vfs_get_cwd_dentry();
+	if (!cwd) {
+		return -3;
+	}
+
+	/* 解析路径，得到目标 dentry */
+	if (path[0] == '/') {
+		/* 绝对路径：从根目录开始解析 */
+		target = vfs_lookup_root(sb, path);
+		if (!target) {
+			return -4;
+		}
+	} else {
+		/* 相对路径：从当前工作目录开始解析 */
+		target = vfs_path_lookup(cwd, path);
+		if (!target) {
+			return -5;
+		}
+	}
+
+	if (!target->d_inode) {
+		return -6;
+	}
+
+	/* 目前仅支持删除普通文件，不允许删除目录 */
+	if (S_ISDIR(target->d_inode->i_mode)) {
+		return -7;
+	}
+
+	parent = target->d_parent;
+	if (!parent || !parent->d_inode || !parent->d_inode->i_op ||
+	    !parent->d_inode->i_op->unlink) {
+		return -8;
+	}
+
+	return parent->d_inode->i_op->unlink(parent->d_inode, target);
+}
+

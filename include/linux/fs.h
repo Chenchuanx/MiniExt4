@@ -77,6 +77,7 @@ int vfs_read(int fd, char *buf, size_t count);
 int vfs_getcwd(char *buf, int buf_len);
 int vfs_mkdir(const char *path, umode_t mode);
 int vfs_chdir(const char *path);
+int vfs_unlink(const char *path);
 
 #ifdef __cplusplus
 }

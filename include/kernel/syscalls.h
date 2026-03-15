@@ -16,6 +16,7 @@ static const uint32_t SYS_GETDENTS = 6; // 文件系统：获取目录项
 static const uint32_t SYS_GETCWD   = 7; // 文件系统：获取当前工作目录
 static const uint32_t SYS_FWRITE   = 8; // 文件系统：向文件写入数据
 static const uint32_t SYS_FREAD    = 9; // 文件系统：从文件读取数据
+static const uint32_t SYS_UNLINK   = 10; // 文件系统：删除普通文件
 
 class SyscallHandler : public InterruptHandler
 {

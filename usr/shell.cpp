@@ -113,6 +113,18 @@ static void cmd_cat(const int8_t *arg) {
     sysClose(fd);
 }
 
+static void cmd_rm(const int8_t *arg) {
+    if (!arg) {
+        sysPrintf((int8_t*)"rm: missing operand\n");
+        return;
+    }
+
+    int ret = sysUnlink(arg);
+    if (ret != 0) {
+        sysPrintf((int8_t*)"rm: failed\n");
+    }
+}
+
 // echo 命令：
 // 1) 直接输出：      echo hello world
 // 2) 重定向到文件：  echo hello > file
@@ -231,6 +243,7 @@ static struct shell_command cmd_table[] = {
     {"touch", cmd_touch},
     {"echo", cmd_echo},
     {"cat", cmd_cat},
+    {"rm", cmd_rm},
     {0, 0}
 };
 

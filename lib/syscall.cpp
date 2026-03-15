@@ -77,3 +77,11 @@ int sysFileRead(int fd, char *buf, int count)
     return ret;
 }
 
+// 系统调用：删除普通文件
+int sysUnlink(const int8_t *path)
+{
+    int ret;
+    __asm__("int $0x80" : "=a"(ret) : "a"(SYS_UNLINK), "b"(path));
+    return ret;
+}
+
