@@ -268,13 +268,15 @@ uint32_t ext4_new_block(struct super_block *sb)
 	
 	/* 写回组描述符 */
 	ret = ext4_update_group_desc(sb, 0);
-	
-	free(bitmap_buf);
-	
 	if (ret < 0) {
+		free(bitmap_buf);
 		return 0;
 	}
-	
+
+	(void)ext4_sync_super_free_counts(sb);
+
+	free(bitmap_buf);
+
 	return new_block;
 }
 
@@ -356,9 +358,15 @@ int ext4_free_block(struct super_block *sb, uint32_t blocknr)
 	
 	/* 写回组描述符 */
 	ret = ext4_update_group_desc(sb, group);
-	
+	if (ret < 0) {
+		free(bitmap_buf);
+		return ret;
+	}
+
+	(void)ext4_sync_super_free_counts(sb);
+
 	free(bitmap_buf);
-	
+
 	return ret;
 }
 

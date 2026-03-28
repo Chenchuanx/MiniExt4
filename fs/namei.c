@@ -72,7 +72,7 @@ static int next_component(const char **path, char *name, int *len)
  * @path:  路径字符串（支持绝对路径和相对路径）
  * 
  * 解析规则（简化版）：
- *   - 多个连续 '/' 视为一个分隔符
+ *   - 多个连续 '/' 视为一个分隔符是
  *   - "."   保持在当前目录
  *   - ".."  返回父目录（若存在）
  *   - 其他  调用 i_op->lookup 逐级向下解析

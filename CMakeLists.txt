@@ -59,6 +59,7 @@ set(KERNEL_SOURCES
     lib/syscall.cpp
     lib/string.cpp
     usr/shell.cpp
+    usr/cmds.cpp
 )
 
 # 启用汇编语言支持

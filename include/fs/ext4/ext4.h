@@ -235,6 +235,9 @@ int ext4_free_block(struct super_block *sb, uint32_t blocknr);
 uint32_t ext4_new_inode(struct super_block *sb);
 int ext4_free_inode(struct super_block *sb, uint32_t ino);
 
+/* 将块组描述符中的空闲块/inode 计数写回磁盘超级块（单块组镜像与 Linux 一致） */
+int ext4_sync_super_free_counts(struct super_block *sb);
+
 /* 根据 inode 号从磁盘加载 inode（供 lookup 等使用） */
 struct inode *ext4_iget(struct super_block *sb, unsigned long ino);
 

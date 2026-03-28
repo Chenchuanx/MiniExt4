@@ -705,6 +705,53 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 }
 
 /**
+ * ext4_sync_super_free_counts - 用块组描述符中的计数更新超级块里的全局空闲计数
+ *
+ * MiniExt4 只维护第一块组的内存描述符；Linux/e2fsck 会对比超级块与块组元数据。
+ * 分配/释放块或 inode 后应调用本函数，使镜像在宿主机上挂载、检查时一致。
+ */
+int ext4_sync_super_free_counts(struct super_block *sb)
+{
+	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+	struct ext4_super_block *esb;
+	char *buf;
+	uint32_t block_size;
+	uint32_t free_blocks;
+	uint32_t free_inodes;
+	int ret;
+
+	if (!sbi || !sbi->s_group_desc) {
+		return -1;
+	}
+
+	block_size = sbi->s_block_size;
+	buf = (char *)malloc(block_size);
+	if (!buf) {
+		return -1;
+	}
+
+	ret = ext4_read_block(0, buf);
+	if (ret < 0) {
+		free(buf);
+		return -1;
+	}
+
+	esb = (struct ext4_super_block *)(buf + 1024);
+	free_blocks = (uint32_t)sbi->s_group_desc->bg_free_blocks_count_lo |
+		      ((uint32_t)sbi->s_group_desc->bg_free_blocks_count_hi << 16);
+	free_inodes = (uint32_t)sbi->s_group_desc->bg_free_inodes_count_lo |
+		      ((uint32_t)sbi->s_group_desc->bg_free_inodes_count_hi << 16);
+
+	esb->s_free_blocks_count_lo = free_blocks;
+	esb->s_free_blocks_count_hi = 0;
+	esb->s_free_inodes_count = free_inodes;
+
+	ret = ext4_write_block(0, buf);
+	free(buf);
+	return ret < 0 ? -1 : 0;
+}
+
+/**
  * ext4_write_inode - 将 VFS inode 写回 Ext4 磁盘 inode
  *
  * 参考 Linux 内核 fs/ext4/inode.c::ext4_write_inode（极简版，无日志、无事务）
