@@ -58,8 +58,8 @@ set(KERNEL_SOURCES
     lib/printf.cpp
     lib/syscall.cpp
     lib/string.cpp
-    usr/shell.cpp
-    usr/cmds.cpp
+    kernel/shell.cpp
+    kernel/cmds.cpp
 )
 
 # 启用汇编语言支持

@@ -1,5 +1,5 @@
-#ifndef __USR_SHELL_H_
-#define __USR_SHELL_H_
+#ifndef __KERNEL_SHELL_H_
+#define __KERNEL_SHELL_H_
 
 #include <linux/types.h>
 #include <drivers/keyboard.h>

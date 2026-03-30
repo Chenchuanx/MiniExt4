@@ -1,5 +1,5 @@
-#ifndef __USR_CMDS_H_
-#define __USR_CMDS_H_
+#ifndef __KERNEL_CMDS_H_
+#define __KERNEL_CMDS_H_
 
 #include <linux/types.h>
 

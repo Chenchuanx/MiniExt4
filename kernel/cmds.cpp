@@ -1,4 +1,4 @@
-#include <usr/cmds.h>
+#include <kernel/cmds.h>
 #include <lib/syscall.h>
 #include <linux/dirent.h>
 #include <linux/string.h>
@@ -295,3 +295,4 @@ const struct cmd_entry cmd_table[] = {
 	{"test_fill", cmd_test_fill},
 	{0, 0},
 };
+

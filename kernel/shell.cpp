@@ -1,5 +1,5 @@
-#include <usr/shell.h>
-#include <usr/cmds.h>
+#include <kernel/shell.h>
+#include <kernel/cmds.h>
 #include <drivers/keyboard.h>
 #include <lib/syscall.h>
 #include <linux/string.h>
@@ -77,3 +77,4 @@ void simpleShell(const char c, KeyboardDriver *pKeyDriver)
 
 	sysPrintf(SHELL_PROMPT);
 }
+
