@@ -46,6 +46,7 @@ set(KERNEL_SOURCES
     fs/ext4/ialloc.c
     fs/ext4/dir.c
     fs/ext4/file.c
+    fs/ext4/extents.c
     drivers/ata.cpp
     drivers/rtc.cpp
     kernel/interrupts/interrupts.cpp

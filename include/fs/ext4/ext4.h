@@ -183,6 +183,12 @@ struct ext4_inode {
 	__le32	i_reserved2;	/* 保留 */
 } __attribute__((packed));
 
+/* Inode 标志位（与 Linux ext4 兼容的 EXTENTS 标志） */
+#define EXT4_INODE_FLAG_EXTENTS 0x00080000U
+
+/* 不兼容特性标志（仅使用 EXTENTS，用于让宿主 Linux 识别 extents 模式） */
+#define EXT4_FEATURE_INCOMPAT_EXTENTS 0x00000040U
+
 /* Ext4 目录项（on-disk，与 Linux ext2/ext3/ext4 一致：name_len/file_type 各 1 字节） */
 struct ext4_dir_entry {
 	__le32	inode;		/* Inode 号 */
@@ -211,12 +217,54 @@ struct ext4_sb_info {
 	uint32_t	s_root_ino;
 };
 
-/* Ext4 Inode 信息（内存结构，挂到 inode->i_private） */
+/* Ext4 Inode 信息（内存结构，挂到 inode->i_private）
+ *
+ * 说明：
+ * - 目录仍然使用传统的直接块数组 i_block[0..11] 存放目录块号；
+ * - 普通文件开启 EXT4_INODE_FLAG_EXTENTS 时：
+ *   - i_block 数组的 60 字节区域按照 Linux ext4 的格式解释为：
+ *     ext4_extent_header + 若干 ext4_extent / ext4_extent_idx（root 节点）
+ *   - 即 root extents 节点直接内嵌在 inode 中，而不是单独的索引块。
+ */
 struct ext4_inode_info {
 	/* 从磁盘 inode 读取的信息 */
 	uint32_t	i_block[15];	/* 块指针数组 */
 	uint32_t	i_flags;	/* Ext4 Inode 标志 */
 };
+
+/* === Extents 机制相关结构（对齐 Linux ext4 on-disk 布局） === */
+
+/* 与 Linux fs/ext4/extents.h 对齐的头部 */
+struct ext4_extent_header {
+	__le16	eh_magic;	/* 魔数：0xF30A */
+	__le16	eh_entries;	/* 当前已使用的条目数 */
+	__le16	eh_max;		/* 最大条目数 */
+	__le16	eh_depth;	/* 深度：0=叶子，>0 为索引节点 */
+	__le32	eh_generation;	/* 代数（当前未使用） */
+} __attribute__((packed));
+
+/* 叶子节点中的 extent 条目 */
+struct ext4_extent {
+	__le32	ee_block;	/* 逻辑起始块号 */
+	__le16	ee_len;		/* 块数 */
+	__le16	ee_start_hi;	/* 物理起始块号的高 16 位 */
+	__le32	ee_start_lo;	/* 物理起始块号的低 32 位 */
+} __attribute__((packed));
+
+/* 索引节点中的索引条目（当前 MiniExt4 仅预留，不必马上实现多级） */
+struct ext4_extent_idx {
+	__le32	ei_block;	/* 子树覆盖的最小逻辑块号 */
+	__le32	ei_leaf_lo;	/* 子节点块号（低 32 位） */
+	__le16	ei_leaf_hi;	/* 子节点块号（高 16 位） */
+	__le16	ei_unused;
+} __attribute__((packed));
+
+/* Extents 头部魔数（与 Linux 保持一致） */
+#define EXT4_EXT_MAGIC 0xF30A
+
+/* 基于 extents 的数据块映射接口 */
+int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
+			   int create, uint32_t *out_block, int *is_new);
 
 /* 函数声明 */
 int ext4_read_block(uint32_t blocknr, void *buf);

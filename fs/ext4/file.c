@@ -60,16 +60,9 @@ static void simple_free(void *p)
 #define malloc simple_malloc
 #define free simple_free
 
-/* 获取逻辑块号对应的数据块号
- * @inode:  文件 inode
- * @lblock: 逻辑块号（从 0 开始）
- * @create: 为 1 时允许分配新块，为 0 时不分配
- * @out_block: 返回的数据块号（0 表示空洞或失败）
- * @is_new:  返回该数据块是否是新分配的（仅在 create=1 时有意义）
- *
- * 成功返回 0，失败返回 -1。
+/* 获取逻辑块号对应的数据块号 （传统直接/间接块映射）
  */
-static int ext4_get_data_block(struct inode *inode, uint32_t lblock,
+static int ext4_legacy_get_data_block(struct inode *inode, uint32_t lblock,
 			       int create, uint32_t *out_block, int *is_new)
 {
 	struct super_block *sb = inode->i_sb;
@@ -281,6 +274,39 @@ static int ext4_get_data_block(struct inode *inode, uint32_t lblock,
 		free(ind_buf);
 		return 0;
 	}
+}
+
+/* 使用 extents 机制获取数据块号（fs/ext4/extents.c） */
+extern int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
+				  int create, uint32_t *out_block, int *is_new);
+
+/* 统一入口：根据 inode 是否开启 extents 决定具体实现 */
+static int ext4_get_data_block(struct inode *inode, uint32_t lblock,
+			       int create, uint32_t *out_block, int *is_new)
+{
+	struct ext4_inode_info *ei = (struct ext4_inode_info *)inode->i_private;
+
+	/* 仅对普通文件启用 extents 机制 */
+	if (S_ISREG(inode->i_mode)) {
+		/* 如果是写入路径（create=1），则自动打开 extents 标志，确保后续
+		 * 的数据块分配和映射都通过 extents 完成。
+		 */
+		if (create && ei && !(ei->i_flags & EXT4_INODE_FLAG_EXTENTS)) {
+			ei->i_flags |= EXT4_INODE_FLAG_EXTENTS;
+		}
+
+		if (ei && (ei->i_flags & EXT4_INODE_FLAG_EXTENTS)) {
+			/* 启用 extents：优先走 extents 版本 */
+			int ret = ext4_extents_get_block(inode, lblock, create, out_block, is_new);
+			if (ret == 0) {
+				return 0;
+			}
+			/* extents 出错时再回退到传统实现，避免 I/O 直接失败 */
+		}
+	}
+
+	/* 未启用 extents：使用传统直接/间接块映射 */
+	return ext4_legacy_get_data_block(inode, lblock, create, out_block, is_new);
 }
 
 /* 普通文件操作 */

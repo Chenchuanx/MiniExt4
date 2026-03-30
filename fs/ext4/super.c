@@ -235,7 +235,8 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_inode_size = inode_size;
     esb->s_block_group_nr = 0;
     esb->s_feature_compat = 0;
-    esb->s_feature_incompat = 0;
+    /* 启用 EXTENTS 特性，使宿主 Linux 按 extents 模式解析 inode->i_block */
+    esb->s_feature_incompat = EXT4_FEATURE_INCOMPAT_EXTENTS;
     esb->s_feature_ro_compat = 0;
     esb->s_mkfs_time = now;  /* mkfs 时间 */
     esb->s_journal_inum = 0;  /* 无日志 */
