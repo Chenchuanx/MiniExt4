@@ -248,7 +248,8 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_hash_seed[3] = 0;
     esb->s_def_hash_version = 0;  /* 默认哈希版本 */
     esb->s_jnl_backup_type = 0;  /* 无日志备份 */
-    esb->s_desc_size = 32;  /* 组描述符大小：32 字节 */
+    /* 组描述符大小：使用完整的 Ext4 块组描述符结构体大小（通常为 64 字节） */
+    esb->s_desc_size = (uint16_t)sizeof(struct ext4_group_desc);
     
     /* 生成简单的 UUID */
     for (int i = 0; i < 16; i++) {
@@ -520,7 +521,48 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         }
         esb = (struct ext4_super_block *)(buf + 1024);
     }
-    
+    /* 校验组描述符大小，只接受 32 或 64 字节，其他情况视为不支持 */
+    if (esb->s_desc_size != 32 && esb->s_desc_size != (uint16_t)sizeof(struct ext4_group_desc)) {
+        printf("Unsupported ext4 group desc size\n");
+        printfHex((uint8_t)(esb->s_desc_size & 0xff));
+        printf("\n");
+        free(buf);
+        return -1;
+    }
+
+    /* 简单特性白名单：
+     * - s_feature_compat：当前全部视为 0（不支持 ext_attr、resize_inode 等），非 0 直接失败；
+     * - s_feature_incompat：仅允许 EXTENTS 位，其余不支持；
+     * - s_feature_ro_compat：全部要求为 0。
+     *
+     * 这样可以避免在不理解的布局/校验规则下“误读” ext4 镜像。
+     */
+    if (esb->s_feature_compat != 0) {
+        printf("Unsupported ext4 compat features\n");
+        printfHex((uint8_t)(esb->s_feature_compat & 0xff));
+        printf("\n");
+        free(buf);
+        return -1;
+    }
+    {
+        uint32_t allowed_incompat = EXT4_FEATURE_INCOMPAT_EXTENTS;
+        uint32_t unsupported = esb->s_feature_incompat & ~allowed_incompat;
+        if (unsupported != 0) {
+            printf("Unsupported ext4 incompat features\n");
+            printfHex((uint8_t)(esb->s_feature_incompat & 0xff));
+            printf("\n");
+            free(buf);
+            return -1;
+        }
+    }
+    if (esb->s_feature_ro_compat != 0) {
+        printf("Unsupported ext4 ro_compat features\n");
+        printfHex((uint8_t)(esb->s_feature_ro_compat & 0xff));
+        printf("\n");
+        free(buf);
+        return -1;
+    }
+
     /* 计算块大小 */
     block_size = 1024 << esb->s_log_block_size;
     if (block_size < EXT4_MIN_BLOCK_SIZE || block_size > EXT4_MAX_BLOCK_SIZE) {
@@ -547,6 +589,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     sbi->s_first_data_block = esb->s_first_data_block;
     sbi->s_log_block_size = esb->s_log_block_size;
     sbi->s_block_size = block_size;
+    sbi->s_desc_size = esb->s_desc_size;
     sbi->s_root_ino = 2;  /* Ext4 根目录通常是 inode 2 */
     
     /* 计算块组数 */
@@ -573,7 +616,15 @@ static int ext4_fill_super(struct super_block *sb, void *data)
             free(buf);
             return -1;
         }
-        memcpy(sbi->s_group_desc, buf, sizeof(struct ext4_group_desc));
+        /* 只复制磁盘上存在的字节数，其余清零，兼容 32/64 字节两种布局 */
+        memset(sbi->s_group_desc, 0, sizeof(struct ext4_group_desc));
+        {
+            uint32_t copy_sz = sbi->s_desc_size;
+            if (copy_sz > sizeof(struct ext4_group_desc)) {
+                copy_sz = sizeof(struct ext4_group_desc);
+            }
+            memcpy(sbi->s_group_desc, buf, copy_sz);
+        }
     }
     
     free(buf);

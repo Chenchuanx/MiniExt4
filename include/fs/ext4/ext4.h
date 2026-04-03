@@ -209,6 +209,8 @@ struct ext4_sb_info {
 	uint32_t	s_log_block_size;	/* 块大小对数 */
 	uint32_t	s_block_size;		/* 块大小（字节） */
 	uint32_t	s_groups_count;		/* 块组数 */
+	/* 组描述符大小（字节）。典型值：32（老格式）、64（ext4 新格式） */
+	uint16_t	s_desc_size;
 	
 	/* 块组描述符表（简化版，只保存第一个块组） */
 	struct ext4_group_desc *s_group_desc;
