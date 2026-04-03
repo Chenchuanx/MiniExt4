@@ -85,3 +85,10 @@ int sysUnlink(const int8_t *path)
     return ret;
 }
 
+// 系统调用：获取文件属性
+int sysStat(const char *path, struct kstat *st)
+{
+    int ret;
+    __asm__("int $0x80" : "=a"(ret) : "a"(SYS_STAT), "b"(path), "c"(st));
+    return ret;
+}

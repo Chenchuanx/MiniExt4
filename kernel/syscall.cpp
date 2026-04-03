@@ -100,6 +100,13 @@ uint32_t SyscallHandler::HandleInterrupt(uint32_t esp)
         cpu->eax = vfs_unlink(path);
         break;
     }
+    case SYS_STAT:
+    {
+        const char *path = (const char *)cpu->ebx;
+        struct kstat *st = (struct kstat *)cpu->ecx;
+        cpu->eax = vfs_stat(path, st);
+        break;
+    }
     default:
         break;
     }

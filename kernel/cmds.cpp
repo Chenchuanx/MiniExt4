@@ -3,6 +3,116 @@
 #include <linux/dirent.h>
 #include <linux/string.h>
 #include <linux/fs.h>
+#include <lib/time.h>
+
+/*
+ * u32_to_dec - 将无符号整数转换为十进制字符串
+ *
+ * @buf:    输出缓冲区
+ * @buf_size: 缓冲区大小
+ * @v:      要转换的无符号整数
+ */
+static void u32_to_dec(char *buf, int buf_size, unsigned long v)
+{
+    if (buf_size <= 1) {
+        return;
+    }
+
+    char tmp[16];
+    int pos = 0;
+
+    if (v == 0U) {
+        tmp[pos++] = '0';
+    } else {
+        while (v > 0U && pos < (int)sizeof(tmp)) {
+            unsigned int d = v % 10U;
+            tmp[pos++] = (char)('0' + d);
+            v /= 10U;
+        }
+    }
+
+    int out = 0;
+    if (pos >= buf_size) {
+        pos = buf_size - 1;
+    }
+    while (pos > 0) {
+        buf[out++] = tmp[--pos];
+    }
+    buf[out] = '\0';
+}
+
+/*
+ * readable_size - 将字节大小转换为可读的格式
+ *
+ * @size:    字节大小
+ * @buf:    输出缓冲区
+ * @buf_size: 缓冲区大小
+ */
+static void readable_size(unsigned long size, char *buf, int buf_size)
+{
+    const char *units[] = { "B", "K", "M", "G", "T" };
+    int unit = 0;
+
+    unsigned long whole = size;
+    unsigned long rem = 0;
+
+    /* 将 size 逐级换算到合适单位，同时保留余数用于一位小数 */
+    while (whole >= 1024U && unit < 4) {
+        rem = whole & 1023U;
+        whole >>= 10; /* /1024 */
+        unit++;
+    }
+
+    if (buf_size <= 1) {
+        return;
+    }
+
+    /* B：不显示小数 */
+    if (unit == 0) {
+        char num[16];
+        u32_to_dec(num, sizeof(num), whole);
+        int i = 0, j = 0;
+        while (num[i] != '\0' && j < buf_size - 2) {
+            buf[j++] = num[i++];
+        }
+        if (j < buf_size - 1) {
+            buf[j++] = units[unit][0];
+            buf[j] = '\0';
+        } else {
+            buf[buf_size - 1] = '\0';
+        }
+        return;
+    }
+
+    /* 一位小数：decimal = round(rem * 10 / 1024) */
+    unsigned long decimal = (rem * 10U + 512U) >> 10; /* /1024 */
+    if (decimal >= 10U) {
+        whole += 1U;
+        decimal = 0U;
+    }
+
+    /* 组装字符串：whole[.decimal]unit */
+    int j = 0;
+    char num[16];
+    u32_to_dec(num, sizeof(num), whole);
+    for (int i = 0; num[i] != '\0' && j < buf_size - 1; i++) {
+        buf[j++] = num[i];
+    }
+
+    if (decimal != 0U && j < buf_size - 2) {
+        buf[j++] = '.';
+        buf[j++] = (char)('0' + (int)decimal);
+    }
+
+    if (j < buf_size - 1) {
+        buf[j++] = units[unit][0];
+    }
+    if (j >= buf_size) {
+        j = buf_size - 1;
+    }
+    buf[j] = '\0';
+}
+
 
 static void cmd_time(const int8_t *arg) {
 	(void)arg;
@@ -22,36 +132,147 @@ static void cmd_pwd(const int8_t *arg) {
 }
 
 static void cmd_ls(const int8_t *arg) {
-	const char *path = arg ? (const char *)arg : ".";
-	int fd = sysOpen(path, 0, 0);
-	if (fd < 0) {
-		sysPrintf((int8_t *)"ls: cannot access path\n");
-		return;
-	}
+    int show_long = 0;   // -l
+    int human = 0;       // -h（仅在 show_long=1 时有效）
+    int show_inode = 0;  // -i
 
-	char buf[1024];
-	int nread;
+    const char *p = arg ? (const char *)arg : 0;
+    const char *path = ".";
 
-	while ((nread = sysGetdents(fd, buf, sizeof(buf))) > 0) {
-		int bpos = 0;
-		while (bpos < nread) {
-			struct linux_dirent *d = (struct linux_dirent *)(buf + bpos);
+    if (p && *p) {
+        // 跳过前导空格
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
 
-			int name_len = 0;
-			while (d->d_name[name_len])
-				name_len++;
+        // 解析多个选项组，例如：-l -h、-lh、-il 等
+        while (*p == '-') {
+            p++;
+            while (*p && *p != ' ' && *p != '\t') {
+                if (*p == 'l') {
+                    show_long = 1;
+                } else if (*p == 'h') {
+                    human = 1;
+                } else if (*p == 'i') {
+                    show_inode = 1;
+                }
+                p++;
+            }
+            while (*p == ' ' || *p == '\t') {
+                p++;
+            }
+        }
 
-			if (!((name_len == 1 && d->d_name[0] == '.') ||
-			      (name_len == 2 && d->d_name[0] == '.' && d->d_name[1] == '.'))) {
-				sysPrintf((int8_t *)d->d_name);
-				sysPrintf((int8_t *)"\n");
-			}
+        // 剩下的非空部分当成路径
+        if (*p) {
+            path = p;
+        }
+    }
 
-			bpos += d->d_reclen;
-		}
-	}
+    int fd = sysOpen(path, 0, 0);
+    if (fd < 0) {
+        sysPrintf((int8_t *)"ls: cannot access path\n");
+        return;
+    }
 
-	sysClose(fd);
+    char buf[1024];
+    int nread;
+
+    while ((nread = sysGetdents(fd, buf, sizeof(buf))) > 0) {
+        int bpos = 0;
+        while (bpos < nread) {
+            struct linux_dirent *d = (struct linux_dirent *)(buf + bpos);
+
+            const char *name = d->d_name;
+            int name_len = 0;
+            while (name[name_len]) {
+                name_len++;
+            }
+
+            // 跳过 "." 和 ".."
+            if (!((name_len == 1 && name[0] == '.') ||
+                  (name_len == 2 && name[0] == '.' && name[1] == '.'))) {
+
+                // -i：输出 inode
+                if (show_inode) {
+                    char ino_buf[16];
+                    u32_to_dec(ino_buf, sizeof(ino_buf), (unsigned long)d->d_ino);
+                    sysPrintf((int8_t *)ino_buf);
+                    sysPrintf((int8_t *)"  ");
+                }
+
+                if (!show_long) {
+                    // 普通模式，只输出文件名
+                    sysPrintf((int8_t *)name);
+                    sysPrintf((int8_t *)"\n");
+                } else {
+                    // 长格式，需要用 stat 获取属性
+                    struct kstat st;
+                    char fullpath[256];
+                    int pos = 0;
+
+                    // 组合 fullpath = path + "/" + name
+                    // 特殊处理 path="." 或以 '/' 结尾的情况
+                    if (path[0] == '.' && path[1] == '\0') {
+                        // 当前目录，直接用名字
+                        pos = 0;
+                    } else {
+                        const char *pp = path;
+                        while (*pp && pos < (int)sizeof(fullpath) - 1) {
+                            fullpath[pos++] = *pp++;
+                        }
+                        if (pos > 0 && fullpath[pos - 1] != '/' && pos < (int)sizeof(fullpath) - 1) {
+                            fullpath[pos++] = '/';
+                        }
+                    }
+
+                    int i;
+                    for (i = 0; i < name_len && pos < (int)sizeof(fullpath) - 1; i++) {
+                        fullpath[pos++] = name[i];
+                    }
+                    fullpath[pos] = '\0';
+
+                    if (sysStat(fullpath, &st) == 0) {
+                        char num_buf[16];
+
+                        // 硬链接数
+                        u32_to_dec(num_buf, sizeof(num_buf), (unsigned long)st.nlink);
+                        sysPrintf((int8_t *)num_buf);
+                        sysPrintf((int8_t *)"  ");
+
+                        // 大小：是否人类可读
+                        if (human) {
+                            char sz_buf[16];
+                            readable_size((unsigned long)st.size, sz_buf, sizeof(sz_buf));
+                            sysPrintf((int8_t *)sz_buf);
+                        } else {
+                            u32_to_dec(num_buf, sizeof(num_buf), (unsigned long)st.size);
+                            sysPrintf((int8_t *)num_buf);
+                        }
+                        sysPrintf((int8_t *)"  ");
+
+                        // 修改时间：将“自 1970 起的秒数”格式化为 YYYY-MM-DD hh:mm:ss
+                        char time_buf[32];
+                        format_time((unsigned long)st.mtime_ns, time_buf, sizeof(time_buf));
+                        sysPrintf((int8_t *)time_buf);
+                        sysPrintf((int8_t *)"  ");
+
+                        // 文件名
+                        sysPrintf((int8_t *)name);
+                        sysPrintf((int8_t *)"\n");
+                    } else {
+                        // stat 失败则退化为普通输出
+                        sysPrintf((int8_t *)name);
+                        sysPrintf((int8_t *)"\n");
+                    }
+                }
+            }
+
+            bpos += d->d_reclen;
+        }
+    }
+
+    sysClose(fd);
 }
 
 static void cmd_mkdir(const int8_t *arg) {

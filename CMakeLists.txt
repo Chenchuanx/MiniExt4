@@ -57,6 +57,7 @@ set(KERNEL_SOURCES
     drivers/input/mouse.cpp
     drivers/input/handlers.cpp
     lib/printf.cpp
+    lib/time.cpp
     lib/syscall.cpp
     lib/string.cpp
     kernel/shell.cpp
