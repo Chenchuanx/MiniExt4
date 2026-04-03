@@ -181,6 +181,19 @@ static struct ext4_dir_index *ext4_dir_get_index(struct inode *dir)
 	return idx;
 }
 
+/* 目录项变更后丢弃内存中的哈希索引，避免 remove 后 B+Tree 仍指向旧偏移 */
+static void ext4_dir_index_invalidate(struct inode *dir)
+{
+	struct ext4_inode_info *ei = (struct ext4_inode_info *)dir->i_private;
+	struct ext4_dir_index *idx;
+
+	if (!ei || !ei->dir_index)
+		return;
+	idx = (struct ext4_dir_index *)ei->dir_index;
+	free(idx);
+	ei->dir_index = NULL;
+}
+
 /* 在给定索引结构中添加一条项（内部使用） */
 static void ext4_dir_index_add_idx(struct ext4_dir_index *idx,
 				   const struct qstr *name,
@@ -591,11 +604,11 @@ int ext4_remove_entry(struct inode *dir, const struct qstr *name)
 	char *buf;
 	uint32_t blk_idx;
 	uint32_t off;
-	struct ext4_dir_entry *prev_de;
 	uint32_t prev_blocknr;
 	uint32_t prev_off;
 	int ret;
-	int first = 1;
+	/* 必须按块重置：HTree 目录中叶子块首条目的“前项”在上一逻辑块，不能跨块合并 */
+	int block_first;
 
 	if (!ei || !name || name->len == 0) {
 		return -1;
@@ -606,7 +619,6 @@ int ext4_remove_entry(struct inode *dir, const struct qstr *name)
 		return -1;
 	}
 
-	prev_de = (struct ext4_dir_entry *)0;
 	prev_blocknr = 0;
 	prev_off = 0;
 
@@ -621,6 +633,7 @@ int ext4_remove_entry(struct inode *dir, const struct qstr *name)
 			free(buf);
 			return -1;
 		}
+		block_first = 1;
 		off = 0;
 		while (off < block_size) {
 			struct ext4_dir_entry *de = (struct ext4_dir_entry *)(buf + off);
@@ -634,29 +647,32 @@ int ext4_remove_entry(struct inode *dir, const struct qstr *name)
 			}
 			if (ino != 0 && name_len == (uint16_t)name->len &&
 			    name->name && memcmp(de->name, name->name, (size_t)name_len) == 0) {
-				/* 找到：与前一项合并或清空 inode */
-				if (first) {
+				/* 找到：与前一项合并或清空 inode（仅同一块内可合并） */
+				if (block_first) {
 					/* 块内首项：仅将 inode 置 0 */
 					de->inode = 0;
 					de->name_len = 0;
 					de->file_type = 0;
 					ret = ext4_write_block(blocknr, buf);
 				} else {
-					/* 将当前 rec_len 合并到前一项 */
-					uint16_t prev_rec = le16_to_cpu(prev_de->rec_len);
-					prev_de->rec_len = (uint16_t)(prev_rec + rec_len);
-					ret = ext4_read_block(prev_blocknr, buf);
-					if (ret >= 0) {
-						prev_de = (struct ext4_dir_entry *)(buf + prev_off);
-						prev_de->rec_len = (uint16_t)(prev_rec + rec_len);
-						ret = ext4_write_block(prev_blocknr, buf);
+					struct ext4_dir_entry *pde;
+					uint16_t prev_rec;
+
+					if (prev_blocknr != blocknr) {
+						free(buf);
+						return -1;
 					}
+					pde = (struct ext4_dir_entry *)(buf + prev_off);
+					prev_rec = le16_to_cpu(pde->rec_len);
+					pde->rec_len = (uint16_t)(prev_rec + rec_len);
+					ret = ext4_write_block(blocknr, buf);
 				}
+				if (ret >= 0)
+					ext4_dir_index_invalidate(dir);
 				free(buf);
 				return ret < 0 ? -1 : 0;
 			}
-			first = 0;
-			prev_de = de;
+			block_first = 0;
 			prev_blocknr = blocknr;
 			prev_off = off;
 			off += rec_len;
