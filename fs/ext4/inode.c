@@ -119,8 +119,7 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	ei = (struct ext4_inode_info *)inode->i_private;
 	if (ei) {
 		memset(ei->i_block, 0, sizeof(ei->i_block));
-		/* 新建普通文件默认启用 extents 机制 */
-		ei->i_flags = EXT4_INODE_FLAG_EXTENTS;
+		// ei->i_flags = EXT4_INODE_FLAG_EXTENTS;
 	}
 	sb->s_op->write_inode(inode, NULL);
 	if (ext4_add_entry(dir, &dentry->d_name, ino) != 0) {
