@@ -23,6 +23,8 @@ extern uint32_t ext4_get_block_size(void);
 /* 使用 extents 解析逻辑块 -> 物理块（fs/ext4/extents.c） */
 extern int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 				  int create, uint32_t *out_block, int *is_new);
+extern uint32_t ext4_new_block(struct super_block *sb);
+extern int ext4_free_block(struct super_block *sb, uint32_t blocknr);
 
 /* 简化的内存操作函数 */
 static void *simple_memset(void *s, int c, size_t n)
@@ -48,13 +50,31 @@ static int simple_memcmp(const void *a, const void *b, size_t n)
 	for (i = 0; i < n; i++) if (aa[i] != bb[i]) return aa[i] - bb[i];
 	return 0;
 }
+static void *simple_memmove(void *d, const void *s, size_t n)
+{
+	unsigned char *dd = (unsigned char *)d;
+	const unsigned char *ss = (const unsigned char *)s;
+	size_t i;
+
+	if (!d || !s || n == 0)
+		return d;
+	if (dd < ss) {
+		for (i = 0; i < n; i++)
+			dd[i] = ss[i];
+	} else {
+		for (i = n; i > 0; i--)
+			dd[i - 1] = ss[i - 1];
+	}
+	return d;
+}
 #define memset simple_memset
 #define memcpy simple_memcpy
 #define memcmp simple_memcmp
+#define memmove simple_memmove
 
 /* 简化的内存分配（使用静态池） */
 #define MAX_MALLOC 4096
-#define MAX_MALLOC_BLOCKS 4
+#define MAX_MALLOC_BLOCKS 8
 static char malloc_pool[MAX_MALLOC_BLOCKS][MAX_MALLOC];
 static int malloc_used[MAX_MALLOC_BLOCKS];
 static void *simple_malloc(size_t size)
@@ -64,7 +84,7 @@ static void *simple_malloc(size_t size)
 	for (i = 0; i < MAX_MALLOC_BLOCKS; i++) {
 		if (!malloc_used[i]) { malloc_used[i] = 1; return malloc_pool[i]; }
 	}
-	return (struct bptree_node *)0;
+	return NULL;
 }
 static void simple_free(void *p)
 {
@@ -344,6 +364,342 @@ static int ext4_dir_get_blocknr(struct inode *dir, uint32_t lblock,
 	return 0;
 }
 
+/* ========== HTree 单层索引抽象（多叶子；后续多层可在同接口下接 dx_node）==========
+ *
+ * 约定（与 ext4_mkdir 写入的根块一致）：
+ * - 逻辑块 0：根块，含 . / ..、伪目录项、ext4_dx_root_info、ext4_dx_entry[]
+ * - 逻辑块 1..N：叶子块，仅含普通目录项
+ * - dx_entry[i].hash 为该叶子内名字哈希的上界（含）；最后一条为 0xffffffff
+ * - dx_entry[i].block 为逻辑块号（与 i_block[] 下标一致）
+ */
+
+static uint32_t ext4_htree_name_hash32(const struct qstr *name)
+{
+	u64 h = ext4_dir_default_hash(name, NULL);
+	return (uint32_t)(h ^ (h >> 32));
+}
+
+static int ext4_htree_parse_root(const char *root, uint32_t block_size,
+				 struct ext4_dx_root_info **out_info,
+				 struct ext4_dx_entry **out_entries,
+				 int *out_cap, int *out_count)
+{
+	struct ext4_dir_entry *dot = (struct ext4_dir_entry *)root;
+	uint16_t r1 = le16_to_cpu(dot->rec_len);
+	struct ext4_dir_entry *dotdot = (struct ext4_dir_entry *)(root + r1);
+	uint16_t r2 = le16_to_cpu(dotdot->rec_len);
+	struct ext4_dir_entry *fake = (struct ext4_dir_entry *)(root + r1 + r2);
+	uint32_t fake_off = (uint32_t)(r1 + r2);
+	uint16_t fake_len = le16_to_cpu(fake->rec_len);
+	char *fake_end = (char *)root + fake_off + fake_len;
+	struct ext4_dx_root_info *info;
+	struct ext4_dx_entry *entries;
+	int cap, i;
+
+	if (fake_off + fake_len > block_size || fake_len < (int)sizeof(struct ext4_dir_entry))
+		return -1;
+
+	info = (struct ext4_dx_root_info *)((char *)fake + sizeof(struct ext4_dir_entry));
+	entries = (struct ext4_dx_entry *)(info + 1);
+	if ((char *)(entries + 1) > fake_end)
+		return -1;
+
+	cap = (int)(fake_end - (char *)entries) / (int)sizeof(struct ext4_dx_entry);
+	if (cap < 1)
+		return -1;
+
+	for (i = 0; i < cap; i++) {
+		if (le32_to_cpu(entries[i].hash) == 0xffffffffU) {
+			*out_info = info;
+			*out_entries = entries;
+			*out_cap = cap;
+			*out_count = i + 1;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+static uint32_t ext4_htree_pick_leaf_lblock(struct ext4_dx_entry *entries, int n,
+					    uint32_t h32)
+{
+	int i;
+
+	for (i = 0; i < n; i++) {
+		if (h32 <= le32_to_cpu(entries[i].hash))
+			return le32_to_cpu(entries[i].block);
+	}
+	return le32_to_cpu(entries[n - 1].block);
+}
+
+static int ext4_htree_find_dx_index_for_lblock(struct ext4_dx_entry *entries, int n,
+					       uint32_t lblk)
+{
+	int i;
+
+	for (i = 0; i < n; i++) {
+		if (le32_to_cpu(entries[i].block) == lblk)
+			return i;
+	}
+	return -1;
+}
+
+/* 在叶子缓冲区内尝试插入一条目录项；成功返回 0，并写出 de 在块内偏移 */
+static int ext4_htree_try_insert_leaf(char *leaf, uint32_t block_size,
+				      const struct qstr *name, unsigned long ino,
+				      uint16_t need_rec, uint32_t *out_de_off)
+{
+	uint32_t off = 0;
+
+	while (off + need_rec <= block_size) {
+		struct ext4_dir_entry *de = (struct ext4_dir_entry *)(leaf + off);
+		uint16_t d_rec = le16_to_cpu(de->rec_len);
+		uint16_t d_nl = (uint16_t)de->name_len;
+		uint32_t d_ino = le32_to_cpu(de->inode);
+
+		if (d_rec == 0)
+			return -1;
+		if (d_ino == 0 || d_rec >= (uint16_t)(need_rec + (d_nl <= 0 ? 0 : EXT4_DIR_REC_LEN((int)d_nl)))) {
+			uint16_t old_rec = d_rec;
+			if (d_ino != 0 && old_rec > need_rec) {
+				de->rec_len = (uint16_t)need_rec;
+				de = (struct ext4_dir_entry *)((char *)de + need_rec);
+				de->inode = (uint32_t)ino;
+				de->rec_len = (uint16_t)(old_rec - need_rec);
+				de->name_len = (__u8)name->len;
+				de->file_type = 0;
+				if (name->name && name->len > 0)
+					memcpy(de->name, name->name, (size_t)name->len);
+			} else {
+				de->inode = (uint32_t)ino;
+				de->rec_len = old_rec;
+				de->name_len = (__u8)name->len;
+				de->file_type = 0;
+				if (name->name && name->len > 0)
+					memcpy(de->name, name->name, (size_t)name->len);
+			}
+			*out_de_off = (uint32_t)((char *)de - leaf);
+			return 0;
+		}
+		off += d_rec;
+	}
+	return -1;
+}
+
+#define EXT4_HTREE_SPLIT_MAX_NAMES 256
+
+struct ext4_htree_leaf_item {
+	uint32_t hash;
+	uint32_t ino;
+	uint8_t name_len;
+	char name[255];
+};
+
+static int ext4_htree_leaf_collect(const char *leaf, uint32_t block_size,
+				   struct ext4_htree_leaf_item *items, int *out_n)
+{
+	uint32_t off = 0;
+	int n = 0;
+
+	while (off < block_size) {
+		struct ext4_dir_entry *de = (struct ext4_dir_entry *)(leaf + off);
+		uint16_t rec = le16_to_cpu(de->rec_len);
+		uint16_t nl = (uint16_t)de->name_len;
+		uint32_t ino = le32_to_cpu(de->inode);
+		struct qstr q;
+
+		if (rec == 0)
+			return -1;
+		if (ino != 0 && nl > 0) {
+			if (n >= EXT4_HTREE_SPLIT_MAX_NAMES)
+				return -1;
+			q.len = nl;
+			q.name = (const unsigned char *)de->name;
+			q.hash = 0;
+			items[n].hash = ext4_htree_name_hash32(&q);
+			items[n].ino = ino;
+			items[n].name_len = (__u8)nl;
+			memcpy(items[n].name, de->name, (size_t)nl);
+			n++;
+		}
+		off += rec;
+	}
+	*out_n = n;
+	return 0;
+}
+
+static void ext4_htree_sort_items(struct ext4_htree_leaf_item *items, int n)
+{
+	int i, j;
+
+	for (i = 0; i < n - 1; i++) {
+		for (j = i + 1; j < n; j++) {
+			if (items[i].hash > items[j].hash) {
+				struct ext4_htree_leaf_item t = items[i];
+				items[i] = items[j];
+				items[j] = t;
+			}
+		}
+	}
+}
+
+/* 将 items[0..n) 顺序打包到一个叶子块（末尾一条大空闲记录） */
+static void ext4_htree_pack_leaf(char *leaf, uint32_t block_size,
+				 struct ext4_htree_leaf_item *items, int n)
+{
+	uint32_t pos = 0;
+	int i;
+
+	memset(leaf, 0, block_size);
+	for (i = 0; i < n; i++) {
+		uint16_t rl = EXT4_DIR_REC_LEN((int)items[i].name_len);
+		struct ext4_dir_entry *de = (struct ext4_dir_entry *)(leaf + pos);
+
+		de->inode = items[i].ino;
+		de->rec_len = rl;
+		de->name_len = items[i].name_len;
+		de->file_type = 0;
+		memcpy(de->name, items[i].name, (size_t)items[i].name_len);
+		pos += rl;
+	}
+	if (pos < block_size) {
+		struct ext4_dir_entry *tail = (struct ext4_dir_entry *)(leaf + pos);
+		tail->inode = 0;
+		tail->rec_len = (uint16_t)(block_size - pos);
+		tail->name_len = 0;
+		tail->file_type = 0;
+	}
+}
+
+static void ext4_htree_refresh_dir_inode_size(struct inode *dir,
+						struct ext4_inode_info *ei,
+						uint32_t block_size)
+{
+	int j;
+	unsigned cnt = 0;
+
+	for (j = 0; j < 12; j++) {
+		if (ei->i_block[j] != 0)
+			cnt = (unsigned)(j + 1);
+	}
+	dir->i_size = (uint64_t)block_size * (uint64_t)cnt;
+	dir->i_blocks = (uint64_t)(block_size / 512) * (uint64_t)cnt;
+}
+
+/* 叶满：分裂当前叶，更新根块 dx 表与 inode 块指针；成功返回 0 */
+static int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
+				 struct ext4_inode_info *ei, uint32_t block_size,
+				 char *root_buf, uint32_t root_phys,
+				 uint32_t leaf_lblk, const struct qstr *name,
+				 unsigned long ino, uint16_t need_rec)
+{
+	struct ext4_dx_root_info *info;
+	struct ext4_dx_entry *entries;
+	int cap, nent, idx;
+	uint32_t leaf_phys;
+	char *leaf_buf;
+	struct ext4_htree_leaf_item items[EXT4_HTREE_SPLIT_MAX_NAMES];
+	int n, mid, i;
+	uint32_t new_phys;
+	int new_lblk;
+	uint32_t H_old, H_mid;
+
+	if (ext4_htree_parse_root(root_buf, block_size, &info, &entries, &cap, &nent) < 0)
+		return -1;
+	idx = ext4_htree_find_dx_index_for_lblock(entries, nent, leaf_lblk);
+	if (idx < 0)
+		return -1;
+	if (ext4_dir_get_blocknr(dir, leaf_lblk, &leaf_phys) < 0)
+		return -1;
+
+	leaf_buf = (char *)malloc(block_size);
+	if (!leaf_buf)
+		return -1;
+	if (ext4_read_block(leaf_phys, leaf_buf) < 0) {
+		free(leaf_buf);
+		return -1;
+	}
+	if (ext4_htree_leaf_collect(leaf_buf, block_size, items, &n) < 0) {
+		free(leaf_buf);
+		return -1;
+	}
+	if (n >= EXT4_HTREE_SPLIT_MAX_NAMES) {
+		free(leaf_buf);
+		return -1;
+	}
+	items[n].hash = ext4_htree_name_hash32(name);
+	items[n].ino = (uint32_t)ino;
+	items[n].name_len = (__u8)name->len;
+	if (name->name && name->len > 0)
+		memcpy(items[n].name, name->name, (size_t)name->len);
+	n++;
+
+	ext4_htree_sort_items(items, n);
+
+	mid = n / 2;
+	if (mid < 1 || mid >= n) {
+		free(leaf_buf);
+		return -1;
+	}
+
+	ext4_htree_pack_leaf(leaf_buf, block_size, items, mid);
+	if (ext4_write_block(leaf_phys, leaf_buf) < 0) {
+		free(leaf_buf);
+		return -1;
+	}
+
+	new_phys = ext4_new_block(sb);
+	if (new_phys == 0) {
+		free(leaf_buf);
+		return -1;
+	}
+	for (new_lblk = 1; new_lblk < 12; new_lblk++) {
+		if (ei->i_block[new_lblk] == 0) {
+			ei->i_block[new_lblk] = new_phys;
+			break;
+		}
+	}
+	if (new_lblk >= 12) {
+		ext4_free_block(sb, new_phys);
+		free(leaf_buf);
+		return -1;
+	}
+
+	ext4_htree_pack_leaf(leaf_buf, block_size, items + mid, n - mid);
+	if (ext4_write_block(new_phys, leaf_buf) < 0) {
+		ei->i_block[new_lblk] = 0;
+		ext4_free_block(sb, new_phys);
+		free(leaf_buf);
+		return -1;
+	}
+	free(leaf_buf);
+
+	H_mid = items[mid - 1].hash;
+	H_old = le32_to_cpu(entries[idx].hash);
+	if (nent + 1 > cap)
+		return -1;
+
+	if (idx + 1 < nent)
+		memmove(entries + idx + 2, entries + idx + 1,
+			(size_t)(nent - idx - 1) * sizeof(*entries));
+
+	/* 小端磁盘布局：直接写 __le32 字段 */
+	entries[idx].hash = H_mid;
+	entries[idx + 1].hash = H_old;
+	entries[idx + 1].block = (uint32_t)new_lblk;
+
+	if (ext4_write_block(root_phys, root_buf) < 0)
+		return -1;
+
+	ext4_htree_refresh_dir_inode_size(dir, ei, block_size);
+	if (dir->i_sb && dir->i_sb->s_op && dir->i_sb->s_op->write_inode)
+		dir->i_sb->s_op->write_inode(dir, NULL);
+
+	(void)need_rec;
+	(void)info;
+	return 0;
+}
+
 /**
  * ext4_find_entry - 在目录中按名称查找目录项
  * @dir: 目录 inode（VFS）
@@ -471,65 +827,68 @@ int ext4_add_entry(struct inode *dir, const struct qstr *name, unsigned long ino
 		return -1;
 	}
 
-	/* 对于使用 HTree 索引的目录：
-	 * - 所有普通目录项当前都放在第一个叶子块（逻辑块 1）中
-	 * - 根块（逻辑块 0）仅包含 . / .. 和 HTree 索引数据 */
+	/* HTree 单层多叶子：根块 0 为索引，按 hash 选逻辑块号，叶满则分裂并扩展 dx_entry */
 	if (ei->i_flags & EXT4_INODE_FLAG_INDEX) {
-		uint32_t blocknr;
+		char *buf_root;
+		char *buf_leaf;
+		struct ext4_dx_root_info *info;
+		struct ext4_dx_entry *entries;
+		int cap, nent;
+		uint32_t h32, leaf_lblk, root_phys, leaf_phys;
+		uint32_t de_off;
 
-		/* 逻辑块 1 -> 叶子数据块 */
-		if (ext4_dir_get_blocknr(dir, 1, &blocknr) < 0) {
+		buf_root = (char *)malloc(block_size);
+		buf_leaf = (char *)malloc(block_size);
+		if (!buf_root || !buf_leaf) {
+			if (buf_root) free(buf_root);
+			if (buf_leaf) free(buf_leaf);
 			free(buf);
 			return -1;
 		}
-		ret = ext4_read_block(blocknr, buf);
-		if (ret < 0) {
+		if (ext4_dir_get_blocknr(dir, 0, &root_phys) < 0 ||
+		    ext4_read_block(root_phys, buf_root) < 0 ||
+		    ext4_htree_parse_root(buf_root, block_size, &info, &entries, &cap, &nent) < 0) {
+			free(buf_root);
+			free(buf_leaf);
 			free(buf);
 			return -1;
 		}
-		off = 0;
-		while (off + rec_len <= block_size) {
-			struct ext4_dir_entry *de = (struct ext4_dir_entry *)(buf + off);
-			uint16_t d_rec_len = le16_to_cpu(de->rec_len);
-			uint16_t d_name_len = (uint16_t)de->name_len;
-			uint32_t d_ino = le32_to_cpu(de->inode);
+		(void)info;
 
-			if (d_rec_len == 0) {
-				free(buf);
-				return -1;
-			}
-			if (d_ino == 0 || d_rec_len >= (uint16_t)(rec_len + (d_name_len <= 0 ? 0 : EXT4_DIR_REC_LEN((int)d_name_len)))) {
-				uint16_t old_rec = d_rec_len;
-				if (d_ino != 0 && old_rec > rec_len) {
-					de->rec_len = (uint16_t)rec_len;
-					de = (struct ext4_dir_entry *)((char *)de + rec_len);
-					de->inode = (uint32_t)ino;
-					de->rec_len = (uint16_t)(old_rec - rec_len);
-					de->name_len = (__u8)name->len;
-					de->file_type = 0;
-					if (name->name && name->len > 0)
-						memcpy(de->name, name->name, (size_t)name->len);
-				} else {
-					de->inode = (uint32_t)ino;
-					de->rec_len = old_rec;
-					de->name_len = (__u8)name->len;
-					de->file_type = 0;
-					if (name->name && name->len > 0)
-						memcpy(de->name, name->name, (size_t)name->len);
-				}
-				ret = ext4_write_block(blocknr, buf);
-				if (ret >= 0) {
-					ext4_dir_index_add(dir, name, blocknr,
-							   (uint32_t)((char *)de - buf));
-				}
-				free(buf);
-				return ret < 0 ? -1 : 0;
-			}
-			off += d_rec_len;
+		h32 = ext4_htree_name_hash32(name);
+		leaf_lblk = ext4_htree_pick_leaf_lblock(entries, nent, h32);
+		if (ext4_dir_get_blocknr(dir, leaf_lblk, &leaf_phys) < 0) {
+			free(buf_root);
+			free(buf_leaf);
+			free(buf);
+			return -1;
 		}
-		/* 当前单层实现仅支持一个叶子块，空间不足视为失败 */
+		if (ext4_read_block(leaf_phys, buf_leaf) < 0) {
+			free(buf_root);
+			free(buf_leaf);
+			free(buf);
+			return -1;
+		}
+
+		if (ext4_htree_try_insert_leaf(buf_leaf, block_size, name, ino, rec_len, &de_off) == 0) {
+			ret = ext4_write_block(leaf_phys, buf_leaf);
+			if (ret >= 0)
+				ext4_dir_index_add(dir, name, leaf_phys, de_off);
+			free(buf_root);
+			free(buf_leaf);
+			free(buf);
+			return ret < 0 ? -1 : 0;
+		}
+
+		/* 当前叶放不下：分裂并已在分裂路径中插入新目录项 */
+		ret = ext4_htree_split_leaf(dir, sb, ei, block_size, buf_root, root_phys,
+					    leaf_lblk, name, ino, rec_len);
+		free(buf_root);
+		free(buf_leaf);
 		free(buf);
-		return -1;
+		if (ret == 0)
+			ext4_dir_index_invalidate(dir);
+		return ret < 0 ? -1 : 0;
 	}
 
 	/* 非 HTree 目录：沿用原来的线性扫描逻辑 */
