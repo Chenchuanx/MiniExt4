@@ -234,8 +234,11 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_first_ino = 11;  /* 第一个非保留 inode */
     esb->s_inode_size = inode_size;
     esb->s_block_group_nr = 0;
-    esb->s_feature_compat = 0;
-    /* 启用 EXTENTS 特性，使宿主 Linux 按 extents 模式解析 inode->i_block */
+    /* 兼容/不兼容特性：
+     * - 启用 DIR_INDEX，使宿主 Linux 认为本文件系统支持 HTree 目录索引
+     * - 启用 EXTENTS，使宿主 Linux 按 extents 模式解析普通文件的 i_block
+     */
+    esb->s_feature_compat = EXT4_FEATURE_COMPAT_DIR_INDEX;
     esb->s_feature_incompat = EXT4_FEATURE_INCOMPAT_EXTENTS;
     esb->s_feature_ro_compat = 0;
     esb->s_mkfs_time = now;  /* mkfs 时间 */
@@ -521,43 +524,10 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         }
         esb = (struct ext4_super_block *)(buf + 1024);
     }
-    /* 校验组描述符大小，只接受 32 或 64 字节，其他情况视为不支持 */
-    if (esb->s_desc_size != 32 && esb->s_desc_size != (uint16_t)sizeof(struct ext4_group_desc)) {
+    /* 校验组描述符大小，只接受 32 到 64 字节，其他情况视为不支持 */
+    if (esb->s_desc_size < 32 || esb->s_desc_size > (uint16_t)sizeof(struct ext4_group_desc)) {
         printf("Unsupported ext4 group desc size\n");
         printfHex((uint8_t)(esb->s_desc_size & 0xff));
-        printf("\n");
-        free(buf);
-        return -1;
-    }
-
-    /* 简单特性白名单：
-     * - s_feature_compat：当前全部视为 0（不支持 ext_attr、resize_inode 等），非 0 直接失败；
-     * - s_feature_incompat：仅允许 EXTENTS 位，其余不支持；
-     * - s_feature_ro_compat：全部要求为 0。
-     *
-     * 这样可以避免在不理解的布局/校验规则下“误读” ext4 镜像。
-     */
-    if (esb->s_feature_compat != 0) {
-        printf("Unsupported ext4 compat features\n");
-        printfHex((uint8_t)(esb->s_feature_compat & 0xff));
-        printf("\n");
-        free(buf);
-        return -1;
-    }
-    {
-        uint32_t allowed_incompat = EXT4_FEATURE_INCOMPAT_EXTENTS;
-        uint32_t unsupported = esb->s_feature_incompat & ~allowed_incompat;
-        if (unsupported != 0) {
-            printf("Unsupported ext4 incompat features\n");
-            printfHex((uint8_t)(esb->s_feature_incompat & 0xff));
-            printf("\n");
-            free(buf);
-            return -1;
-        }
-    }
-    if (esb->s_feature_ro_compat != 0) {
-        printf("Unsupported ext4 ro_compat features\n");
-        printfHex((uint8_t)(esb->s_feature_ro_compat & 0xff));
         printf("\n");
         free(buf);
         return -1;

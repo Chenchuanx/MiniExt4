@@ -183,11 +183,51 @@ struct ext4_inode {
 	__le32	i_reserved2;	/* 保留 */
 } __attribute__((packed));
 
-/* Inode 标志位（与 Linux ext4 兼容的 EXTENTS 标志） */
+/* Inode 标志位（与 Linux ext4 兼容的 EXTENTS / DIR_INDEX 标志） */
 #define EXT4_INODE_FLAG_EXTENTS 0x00080000U
+
+/* 目录使用基于哈希的 HTree 索引（与 Linux EXT4_INDEX_FL 一致的位值） */
+#define EXT4_INODE_FLAG_INDEX   0x00001000U
+
+/* 兼容/不兼容特性标志
+ *
+ * - EXT4_FEATURE_COMPAT_DIR_INDEX: 目录使用基于哈希的 HTree 索引
+ * - EXT4_FEATURE_INCOMPAT_EXTENTS: 文件数据使用 extents 映射
+ */
+#define EXT4_FEATURE_COMPAT_DIR_INDEX 0x00002000U
 
 /* 不兼容特性标志（仅使用 EXTENTS，用于让宿主 Linux 识别 extents 模式） */
 #define EXT4_FEATURE_INCOMPAT_EXTENTS 0x00000040U
+
+/* === 目录 HTree on-disk 结构（对齐 Linux fs/ext4/htree.h） === */
+
+/* HTree 根节点头部信息，位于目录第一个块中的 "." 目录项之后 */
+struct ext4_dx_root_info {
+	__le32	reserved_zero;   /* 保留，置为 0 */
+	__u8	hash_version;   /* 哈希版本（与 s_def_hash_version 对应） */
+	__u8	info_length;    /* 本结构体长度（以字节为单位） */
+	__u8	indirect_levels;/* 间接层数：0=单层，>0 有 dx_node */
+	__u8	unused_flags;   /* 当前未使用 */
+} __attribute__((packed));
+
+/* HTree 索引条目（root/leaf 索引块通用） */
+struct ext4_dx_entry {
+	__le32	hash;           /* 哈希值（高位/truncated） */
+	__le32	block;          /* 逻辑块号（相对该目录起始数据块） */
+} __attribute__((packed));
+
+/* HTree 索引块头部（dx_root / dx_node 复用）
+ *
+ * 说明：这里不直接嵌入 struct ext4_dir_entry，以避免在本头文件中引入对其完整定义的依赖。
+ * 实际使用时应在目录实现代码中，通过适当的偏移将 on-disk 布局解释为 dirent+root_info+entries。 */
+struct ext4_dx_node {
+	__le32	fake_inum;
+	__le16	fake_rec_len;
+	__u8	fake_name_len;
+	__u8	fake_file_type;
+	struct ext4_dx_root_info info;
+	struct ext4_dx_entry entries[0];
+} __attribute__((packed));
 
 /* Ext4 目录项（on-disk，与 Linux ext2/ext3/ext4 一致：name_len/file_type 各 1 字节） */
 struct ext4_dir_entry {
@@ -232,6 +272,9 @@ struct ext4_inode_info {
 	/* 从磁盘 inode 读取的信息 */
 	uint32_t	i_block[15];	/* 块指针数组 */
 	uint32_t	i_flags;	/* Ext4 Inode 标志 */
+
+	/* 目录索引用内存结构（基于 B+Tree），非持久化 */
+	void		*dir_index;	/* 指向内部目录索引根/上下文 */
 };
 
 /* === Extents 机制相关结构（对齐 Linux ext4 on-disk 布局） === */

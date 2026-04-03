@@ -278,8 +278,7 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 		*is_new = 0;
 	}
 
-	/* 目录等非常小的对象仍然沿用旧的直接块逻辑：extents 只用于普通文件数据 */
-	if (!S_ISREG(inode->i_mode)) {
+	if (!S_ISREG(inode->i_mode) && !S_ISDIR(inode->i_mode)) {
 		return -1;
 	}
 
