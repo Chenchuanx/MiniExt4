@@ -1,3 +1,5 @@
+#include "linux/types.h"
+#include <drivers/rtc.h>
 #include <kernel/cmds.h>
 #include <lib/syscall.h>
 #include <linux/dirent.h>
@@ -396,21 +398,37 @@ static void cmd_test_fill(const int8_t *arg) {
 		return;
 	}
 
-	char chunk[256];
-	for (int i = 0; i < (int)sizeof(chunk); i++) {
+	int64_t start_time = rtc_get_unix_time();
+
+	static const int block_size = 64 * 1024;
+	static char chunk[block_size];
+
+	for (int i = 0; i < block_size; i++) {
 		chunk[i] = (char)0x41;
 	}
 
 	while (nbytes > 0) {
-		unsigned long chunk_len = nbytes > sizeof(chunk) ? sizeof(chunk) : nbytes;
-		int w = sysFileWrite(fd, chunk, (int)chunk_len);
+		int to_write = (nbytes > (unsigned long)block_size)
+			? block_size
+			: (int)nbytes;
+
+		int w = sysFileWrite(fd, chunk, to_write);
 		if (w <= 0) {
 			sysPrintf((int8_t *)"test_fill: write error\n");
 			sysClose(fd);
 			return;
 		}
+
 		nbytes -= (unsigned long)w;
 	}
+
+	int64_t end_time = rtc_get_unix_time();
+	int64_t duration = end_time - start_time;
+
+	char duration_buf[16];
+	u32_to_dec(duration_buf, sizeof(duration_buf), (unsigned long)duration);
+	sysPrintf((int8_t *)duration_buf);
+	sysPrintf((int8_t *)"s\n");
 
 	sysClose(fd);
 	sysPrintf((int8_t *)"test_fill: ok\n");

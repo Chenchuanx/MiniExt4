@@ -395,18 +395,23 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 			return -1;
 		}
 		if (blocknr == 0) break;
-		if (is_new) {
-			/* 新分配的数据块，先清零 */
-			memset(block_buf, 0, block_size);
-		} else {
-			ret = ext4_read_block(blocknr, block_buf);
-			if (ret < 0) { free(block_buf); return -1; }
-		}
 		to_copy = block_size - off_in_block;
 		if (to_copy > count) to_copy = count;
-		memcpy(block_buf + off_in_block, buf, to_copy);
-		ret = ext4_write_block(blocknr, block_buf);
-		if (ret < 0) { free(block_buf); return -1; }
+		/* 整块对齐写：直接从用户缓冲区落盘，避免 memset/memcpy 或读改写 */
+		if (off_in_block == 0 && to_copy == block_size) {
+			ret = ext4_write_block(blocknr, buf);
+			if (ret < 0) { free(block_buf); return -1; }
+		} else {
+			if (is_new) {
+				memset(block_buf, 0, block_size);
+			} else {
+				ret = ext4_read_block(blocknr, block_buf);
+				if (ret < 0) { free(block_buf); return -1; }
+			}
+			memcpy(block_buf + off_in_block, buf, to_copy);
+			ret = ext4_write_block(blocknr, block_buf);
+			if (ret < 0) { free(block_buf); return -1; }
+		}
 		written += (ssize_t)to_copy;
 		buf += to_copy;
 		*pos += (loff_t)to_copy;
@@ -416,7 +421,8 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 		uint32_t end32 = (uint32_t)(end_pos & 0xFFFFFFFFUL);
 		inode->i_size = end_pos;
 		inode->i_blocks = (unsigned long)((end32 + 511) / 512);
-		sb->s_op->write_inode(inode, NULL);
+		/* 延迟写 inode，避免每次 write 都读改写 inode 表（顺序写大文件时开销极大） */
+		inode->i_state |= I_DIRTY;
 	}
 	free(block_buf);
 	return written;
@@ -424,8 +430,14 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 
 static int ext4_file_release(struct inode *inode, struct file *file)
 {
-	(void)inode;
 	(void)file;
+	if (!inode || !inode->i_sb || !inode->i_sb->s_op ||
+	    !inode->i_sb->s_op->write_inode)
+		return 0;
+	if (inode->i_state & I_DIRTY) {
+		if (inode->i_sb->s_op->write_inode(inode, NULL) == 0)
+			inode->i_state &= ~I_DIRTY;
+	}
 	return 0;
 }
 
