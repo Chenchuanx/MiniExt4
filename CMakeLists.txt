@@ -47,6 +47,7 @@ set(KERNEL_SOURCES
     fs/ext4/dir.c
     fs/ext4/file.c
     fs/ext4/extents.c
+    fs/ext4/htree.c
     fs/bptree.c
     drivers/ata.cpp
     drivers/rtc.cpp

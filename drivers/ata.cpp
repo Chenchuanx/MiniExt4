@@ -392,3 +392,47 @@ int ata_write_sectors(uint32_t lba, uint8_t count, const void *buf)
     return 0;
 }
 
+/**
+ * ata_get_total_sectors - 通过 IDENTIFY 获取磁盘总扇区数（LBA28）
+ */
+uint32_t ata_get_total_sectors(void)
+{
+    Port8Bit device_port(ATA_DEVICE);
+    Port8Bit sector_count_port(ATA_SECTOR_COUNT);
+    Port8Bit lba_low_port(ATA_LBA_LOW);
+    Port8Bit lba_mid_port(ATA_LBA_MID);
+    Port8Bit lba_high_port(ATA_LBA_HIGH);
+    Port8Bit command_port(ATA_COMMAND);
+    Port16Bit data_port(ATA_DATA);
+    Port8Bit status_port(ATA_STATUS);
+    uint16_t identify[256];
+    uint8_t status;
+
+    if (!ata_wait_bsy()) {
+        return 0;
+    }
+
+    /* 选主盘，清空任务寄存器后发送 IDENTIFY */
+    device_port.Write(0xA0);
+    sector_count_port.Write(0);
+    lba_low_port.Write(0);
+    lba_mid_port.Write(0);
+    lba_high_port.Write(0);
+    command_port.Write(ATA_CMD_IDENTIFY);
+
+    status = status_port.Read();
+    if (status == 0) {
+        return 0;
+    }
+    if (!ata_wait_drq()) {
+        return 0;
+    }
+
+    for (int i = 0; i < 256; i++) {
+        identify[i] = data_port.Read();
+    }
+
+    /* IDENTIFY words 60-61: LBA28 总扇区数（低/高 16 位） */
+    return ((uint32_t)identify[61] << 16) | (uint32_t)identify[60];
+}
+

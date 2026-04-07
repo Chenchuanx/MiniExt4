@@ -118,8 +118,17 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	inode->i_sb = sb;
 	ei = (struct ext4_inode_info *)inode->i_private;
 	if (ei) {
+		struct ext4_extent_header *eh;
 		memset(ei->i_block, 0, sizeof(ei->i_block));
-		// ei->i_flags = EXT4_INODE_FLAG_EXTENTS;
+		/* 与 Linux ext4 对齐：普通文件默认使用 extents。 */
+		ei->i_flags |= EXT4_INODE_FLAG_EXTENTS;
+		eh = (struct ext4_extent_header *)ei->i_block;
+		eh->eh_magic = (uint16_t)EXT4_EXT_MAGIC;
+		eh->eh_entries = 0;
+		eh->eh_depth = 0;
+		eh->eh_generation = 0;
+		eh->eh_max = (uint16_t)((sizeof(ei->i_block) - sizeof(*eh)) /
+					sizeof(struct ext4_extent));
 	}
 	sb->s_op->write_inode(inode, NULL);
 	if (ext4_add_entry(dir, &dentry->d_name, ino) != 0) {
@@ -238,7 +247,9 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 		struct ext4_dir_entry *fake = (struct ext4_dir_entry *)((char *)buf + off);
 		uint16_t fake_len = (uint16_t)(block_size - off);
 		struct ext4_dx_root_info *info;
+		struct ext4_dx_countlimit *cl;
 		struct ext4_dx_entry *entries;
+		struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
 
 		/* 伪目录项头：inode == 0，name_len == 0，file_type == 0 */
 		fake->inode = 0;
@@ -249,12 +260,18 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 		/* 在伪目录项头之后布置 HTree 根信息与一个索引条目 */
 		info = (struct ext4_dx_root_info *)((char *)fake + sizeof(struct ext4_dir_entry));
 		info->reserved_zero = 0;
-		info->hash_version = 0; /* 当前使用自定义 FNV 哈希，版本号先置 0 */
+		info->hash_version = sbi ? sbi->s_def_hash_version : EXT4_DX_HASH_LEGACY;
 		info->info_length = (uint8_t)sizeof(struct ext4_dx_root_info);
 		info->indirect_levels = 0; /* 单层 HTree，无额外 dx_node */
 		info->unused_flags = 0;
 
-		entries = (struct ext4_dx_entry *)(info + 1);
+		cl = (struct ext4_dx_countlimit *)(info + 1);
+		entries = (struct ext4_dx_entry *)(cl + 1);
+		cl->limit = (uint16_t)((fake_len - (uint16_t)sizeof(struct ext4_dir_entry) -
+					(uint16_t)sizeof(struct ext4_dx_root_info) -
+					(uint16_t)sizeof(struct ext4_dx_countlimit)) /
+				       (uint16_t)sizeof(struct ext4_dx_entry));
+		cl->count = 1;
 		/* 单层 HTree：仅一个叶子块，逻辑块号为 1，对应 i_block[1] */
 		entries[0].hash = 0xFFFFFFFFU; /* 覆盖所有哈希范围 */
 		entries[0].block = 1;	      /* 逻辑块号 1 -> i_block[1] */

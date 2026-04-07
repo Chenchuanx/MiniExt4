@@ -284,6 +284,18 @@ static void cmd_mkdir(const int8_t *arg) {
 		int ret = sysMkdir(arg);
 		if (ret != 0) {
 			sysPrintf((int8_t *)"mkdir: failed\n");
+			sysPrintf((int8_t *)"mkdir: errno=");
+			{
+				char nbuf[16];
+				if (ret < 0) {
+					sysPrintf((int8_t *)"-");
+					u32_to_dec(nbuf, sizeof(nbuf), (unsigned long)(-ret));
+				} else {
+					u32_to_dec(nbuf, sizeof(nbuf), (unsigned long)ret);
+				}
+				sysPrintf((int8_t *)nbuf);
+			}
+			sysPrintf((int8_t *)"\n");
 		}
 	}
 }
@@ -297,6 +309,14 @@ static void cmd_touch(const int8_t *arg) {
 	int fd = sysOpen((const char *)arg, O_CREAT | O_WRONLY, 0644);
 	if (fd < 0) {
 		sysPrintf((int8_t *)"touch: failed\n");
+		sysPrintf((int8_t *)"touch: errno=");
+		{
+			char nbuf[16];
+			sysPrintf((int8_t *)"-");
+			u32_to_dec(nbuf, sizeof(nbuf), (unsigned long)(-fd));
+			sysPrintf((int8_t *)nbuf);
+		}
+		sysPrintf((int8_t *)"\n");
 		return;
 	}
 
@@ -407,18 +427,45 @@ static void cmd_test_fill(const int8_t *arg) {
 		chunk[i] = (char)0x41;
 	}
 
+	unsigned long total_req = nbytes;
+	unsigned long total_written = 0;
+
 	while (nbytes > 0) {
 		int to_write = (nbytes > (unsigned long)block_size)
 			? block_size
 			: (int)nbytes;
 
 		int w = sysFileWrite(fd, chunk, to_write);
-		if (w <= 0) {
-			sysPrintf((int8_t *)"test_fill: write error\n");
+		if (w < 0) {
+			sysPrintf((int8_t *)"test_fill: write failed (io error)\n");
+			char req_buf[16];
+			char wrote_buf[16];
+			u32_to_dec(req_buf, sizeof(req_buf), total_req);
+			u32_to_dec(wrote_buf, sizeof(wrote_buf), total_written);
+			sysPrintf((int8_t *)"  requested=");
+			sysPrintf((int8_t *)req_buf);
+			sysPrintf((int8_t *)" bytes, written=");
+			sysPrintf((int8_t *)wrote_buf);
+			sysPrintf((int8_t *)" bytes\n");
+			sysClose(fd);
+			return;
+		}
+		if (w == 0) {
+			sysPrintf((int8_t *)"test_fill: no space left (disk full?)\n");
+			char req_buf[16];
+			char wrote_buf[16];
+			u32_to_dec(req_buf, sizeof(req_buf), total_req);
+			u32_to_dec(wrote_buf, sizeof(wrote_buf), total_written);
+			sysPrintf((int8_t *)"  requested=");
+			sysPrintf((int8_t *)req_buf);
+			sysPrintf((int8_t *)" bytes, written=");
+			sysPrintf((int8_t *)wrote_buf);
+			sysPrintf((int8_t *)" bytes\n");
 			sysClose(fd);
 			return;
 		}
 
+		total_written += (unsigned long)w;
 		nbytes -= (unsigned long)w;
 	}
 

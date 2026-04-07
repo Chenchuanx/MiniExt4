@@ -219,10 +219,7 @@ uint32_t ext4_new_inode(struct super_block *sb)
 
 	inodes_per_group = sbi->s_inodes_per_group;
 
-	/* 检查是否有空闲 inode */
-	if (sbi->s_group_desc->bg_free_inodes_count_lo == 0) {
-		return 0;
-	}
+	/* 不仅依赖计数字段；计数可能不准，仍尝试扫描位图。 */
 
 	/* 分配位图缓冲区 */
 	bitmap_buf = (char *)malloc(block_size);

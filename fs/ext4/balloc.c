@@ -221,10 +221,7 @@ uint32_t ext4_new_block(struct super_block *sb)
 		return 0;
 	}
 	
-	/* 检查是否有空闲块 */
-	if (sbi->s_group_desc->bg_free_blocks_count_lo == 0) {
-		return 0;  /* 没有空闲块 */
-	}
+	/* 不仅依赖计数字段；计数可能不准，仍尝试扫描位图。 */
 	
 	/* 分配位图缓冲区 */
 	bitmap_buf = (char *)malloc(block_size);

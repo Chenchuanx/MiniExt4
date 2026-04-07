@@ -148,7 +148,7 @@ struct ext4_group_desc {
 	__le16	bg_free_blocks_count_hi; /* 空闲块数（高 16 位） */
 	__le16	bg_free_inodes_count_hi; /* 空闲 Inodes 数（高 16 位） */
 	__le16	bg_used_dirs_count_hi;	/* 已用目录数（高 16 位） */
-	__le32	bg_itable_unused_hi;	/* 未使用 Inode 表项数（高 32 位） */
+	__le16	bg_itable_unused_hi;	/* 未使用 Inode 表项数（高 16 位） */
 	__le32	bg_exclude_bitmap_hi;	/* 排除位图块号（高 32 位） */
 	__le16	bg_block_bitmap_csum_hi; /* 块位图校验和（高 16 位） */
 	__le16	bg_inode_bitmap_csum_hi; /* Inode 位图校验和（高 16 位） */
@@ -194,7 +194,7 @@ struct ext4_inode {
  * - EXT4_FEATURE_COMPAT_DIR_INDEX: 目录使用基于哈希的 HTree 索引
  * - EXT4_FEATURE_INCOMPAT_EXTENTS: 文件数据使用 extents 映射
  */
-#define EXT4_FEATURE_COMPAT_DIR_INDEX 0x00002000U
+#define EXT4_FEATURE_COMPAT_DIR_INDEX 0x00000020U
 
 /* 不兼容特性标志（仅使用 EXTENTS，用于让宿主 Linux 识别 extents 模式） */
 #define EXT4_FEATURE_INCOMPAT_EXTENTS 0x00000040U
@@ -208,6 +208,12 @@ struct ext4_dx_root_info {
 	__u8	info_length;    /* 本结构体长度（以字节为单位） */
 	__u8	indirect_levels;/* 间接层数：0=单层，>0 有 dx_node */
 	__u8	unused_flags;   /* 当前未使用 */
+} __attribute__((packed));
+
+/* HTree entry header（Linux: dx_countlimit） */
+struct ext4_dx_countlimit {
+	__le16	limit;          /* entries[] 总容量 */
+	__le16	count;          /* entries[] 当前条目数 */
 } __attribute__((packed));
 
 /* HTree 索引条目（root/leaf 索引块通用） */
@@ -226,8 +232,17 @@ struct ext4_dx_node {
 	__u8	fake_name_len;
 	__u8	fake_file_type;
 	struct ext4_dx_root_info info;
+	struct ext4_dx_countlimit countlimit;
 	struct ext4_dx_entry entries[0];
 } __attribute__((packed));
+
+/* HTree hash version（与 Linux ext4 保持一致） */
+#define EXT4_DX_HASH_LEGACY            0
+#define EXT4_DX_HASH_HALF_MD4          1
+#define EXT4_DX_HASH_TEA               2
+#define EXT4_DX_HASH_LEGACY_UNSIGNED   3
+#define EXT4_DX_HASH_HALF_MD4_UNSIGNED 4
+#define EXT4_DX_HASH_TEA_UNSIGNED      5
 
 /* Ext4 目录项（on-disk，与 Linux ext2/ext3/ext4 一致：name_len/file_type 各 1 字节） */
 struct ext4_dir_entry {
@@ -257,6 +272,10 @@ struct ext4_sb_info {
 	
 	/* 根 Inode 号（通常是 2） */
 	uint32_t	s_root_ino;
+
+	/* 目录 HTree 哈希参数（从 superblock 读取） */
+	uint32_t	s_hash_seed[4];
+	uint8_t		s_def_hash_version;
 };
 
 /* Ext4 Inode 信息（内存结构，挂到 inode->i_private）
