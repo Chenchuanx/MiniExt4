@@ -466,6 +466,7 @@ static void cmd_test_fill(const int8_t *arg) {
 
 		total_written += (unsigned long)w;
 		nbytes -= (unsigned long)w;
+
 	}
 
 	int64_t end_time = rtc_get_unix_time();

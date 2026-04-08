@@ -78,6 +78,7 @@ static void simple_free(void *ptr)
 #define malloc simple_malloc
 #define free simple_free
 
+
 static int ext4_read_group_desc(struct super_block *sb, uint32_t group,
 				struct ext4_group_desc *out_gd);
 static int ext4_write_group_desc(struct super_block *sb, uint32_t group,
@@ -285,12 +286,12 @@ int ext4_balloc_flush(struct super_block *sb)
  * 从块位图中找到第一个空闲块，标记为已使用
  * 返回分配的块号，失败返回 0
  */
-uint32_t ext4_new_block(struct super_block *sb)
+uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *out_len)
 {
 	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
 	uint32_t block_size = ext4_get_block_size();
 	uint32_t blocks_per_group = sbi->s_blocks_per_group;
-	uint32_t new_block = 0;
+	uint32_t new_block = 0, alloc_len = 0;
 	struct ext4_group_desc gd_local;
 	uint32_t i, start_i, limit_i;
 	uint32_t g, start_group;
@@ -302,6 +303,9 @@ uint32_t ext4_new_block(struct super_block *sb)
 	}
 	if (!sbi->s_bmap_cache_buf) {
 		return 0;
+	}
+	if (goal_len == 0) {
+		goal_len = 1;
 	}
 
 	/* Linux ext4 类似思路：从 goal 开始做 next-fit，而不是每次从组 0 扫描 */
@@ -341,8 +345,25 @@ uint32_t ext4_new_block(struct super_block *sb)
 			uint32_t byte = i / 8, bit = i % 8;
 			if (byte >= block_size) break;
 			if (!(bitmap_buf[byte] & (1 << bit))) {
-				bitmap_buf[byte] |= (1 << bit);
+				uint32_t run = 1;
+				uint32_t j;
+				uint32_t run_max = goal_len;
+				if (run_max > (group_blocks - i)) {
+					run_max = group_blocks - i;
+				}
+				for (j = i + 1; j < i + run_max; j++) {
+					uint32_t b2 = j / 8, bt2 = j % 8;
+					if (b2 >= block_size) break;
+					if (bitmap_buf[b2] & (1 << bt2)) break;
+					run++;
+				}
+				for (j = 0; j < run; j++) {
+					uint32_t k = i + j;
+					uint32_t b3 = k / 8, bt3 = k % 8;
+					bitmap_buf[b3] |= (1 << bt3);
+				}
 				new_block = group_start + i;
+				alloc_len = run;
 				found = 1;
 				break;
 			}
@@ -353,8 +374,25 @@ uint32_t ext4_new_block(struct super_block *sb)
 				uint32_t byte = i / 8, bit = i % 8;
 				if (byte >= block_size) break;
 				if (!(bitmap_buf[byte] & (1 << bit))) {
-					bitmap_buf[byte] |= (1 << bit);
+					uint32_t run = 1;
+					uint32_t j;
+					uint32_t run_max = goal_len;
+					if (run_max > (group_blocks - i)) {
+						run_max = group_blocks - i;
+					}
+					for (j = i + 1; j < i + run_max; j++) {
+						uint32_t b2 = j / 8, bt2 = j % 8;
+						if (b2 >= block_size) break;
+						if (bitmap_buf[b2] & (1 << bt2)) break;
+						run++;
+					}
+					for (j = 0; j < run; j++) {
+						uint32_t k = i + j;
+						uint32_t b3 = k / 8, bt3 = k % 8;
+						bitmap_buf[b3] |= (1 << bt3);
+					}
 					new_block = group_start + i;
+					alloc_len = run;
 					found = 1;
 					break;
 				}
@@ -367,15 +405,19 @@ uint32_t ext4_new_block(struct super_block *sb)
 		ret = ext4_bmap_cache_flush(sb, sbi);
 		if (ret < 0) return 0;
 
-		if (gd_local.bg_free_blocks_count_lo > 0) gd_local.bg_free_blocks_count_lo--;
+		if (gd_local.bg_free_blocks_count_lo > alloc_len) {
+			gd_local.bg_free_blocks_count_lo = (uint16_t)(gd_local.bg_free_blocks_count_lo - alloc_len);
+		} else {
+			gd_local.bg_free_blocks_count_lo = 0;
+		}
 		if (ext4_write_group_desc(sb, g, &gd_local) < 0) return 0;
 		if (g == 0) *sbi->s_group_desc = gd_local;
 
 		/* 更新 next-fit 游标 */
 		sbi->s_alloc_last_group = g;
-		sbi->s_alloc_last_bit = i;
+		sbi->s_alloc_last_bit = i + alloc_len - 1;
 		sbi->s_alloc_goal_group = g;
-		sbi->s_alloc_goal_bit = i + 1;
+		sbi->s_alloc_goal_bit = i + alloc_len;
 		if (sbi->s_alloc_goal_bit >= group_blocks) {
 			sbi->s_alloc_goal_group = (g + 1 < sbi->s_groups_count) ? (g + 1) : 0;
 			sbi->s_alloc_goal_bit = 1;
@@ -390,8 +432,17 @@ uint32_t ext4_new_block(struct super_block *sb)
 		break;
 	}
 	if (new_block == 0) return 0;
+	if (out_len) {
+		*out_len = alloc_len;
+	}
 
 	return new_block;
+}
+
+uint32_t ext4_new_block(struct super_block *sb)
+{
+	uint32_t alloc_len = 0;
+	return ext4_new_blocks(sb, 1, &alloc_len);
 }
 
 /**

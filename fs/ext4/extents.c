@@ -21,6 +21,7 @@ extern int ext4_read_block(uint32_t blocknr, void *buf);
 extern int ext4_write_block(uint32_t blocknr, const void *buf);
 extern uint32_t ext4_get_block_size(void);
 extern uint32_t ext4_new_block(struct super_block *sb);
+extern uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *out_len);
 
 /* 简化的内存操作函数（与其他 Ext4 源文件保持一致） */
 static void *simple_memset(void *s, int c, size_t n)
@@ -82,6 +83,9 @@ static void simple_free(void *ptr)
 
 #define malloc simple_malloc
 #define free simple_free
+
+#define EXT4_PREALLOC_GOAL_LEN 32U
+
 
 /* 在 extents 索引块中查找覆盖给定逻辑块的 extent
  * 成功找到时：
@@ -329,7 +333,8 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 		 * 在连续写入时做 extent 合并。
 		 */
 		{
-			uint32_t new_block = ext4_new_block(sb);
+			uint32_t alloc_len = 1;
+			uint32_t new_block = ext4_new_blocks(sb, EXT4_PREALLOC_GOAL_LEN, &alloc_len);
 			struct ext4_extent new_ex;
 
 			if (new_block == 0) {
@@ -338,11 +343,18 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 			memset(&new_ex, 0, sizeof(new_ex));
 			new_ex.ee_block    = lblock;
-			new_ex.ee_len      = 1;
+			if (alloc_len == 0) {
+				alloc_len = 1;
+			}
+			if (alloc_len > 0x7fffU) {
+				alloc_len = 0x7fffU;
+			}
+			new_ex.ee_len      = (uint16_t)alloc_len;
 			new_ex.ee_start_lo = new_block;
 			new_ex.ee_start_hi = 0;
 
-			if (ext4_extents_insert(eh_root, &new_ex) < 0) {
+			ret = ext4_extents_insert(eh_root, &new_ex);
+			if (ret < 0) {
 				return -1;
 			}
 

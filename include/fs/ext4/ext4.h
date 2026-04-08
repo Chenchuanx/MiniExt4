@@ -354,6 +354,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks);
 
 /* 块分配和释放 */
 uint32_t ext4_new_block(struct super_block *sb);
+uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *out_len);
 int ext4_free_block(struct super_block *sb, uint32_t blocknr);
 int ext4_balloc_flush(struct super_block *sb);
 

@@ -36,6 +36,7 @@ static void *simple_memset(void *s, int c, size_t n)
 #define memset simple_memset
 
 
+
 /* 简化的内存分配（使用静态池） */
 #define MAX_MALLOC 4096
 #define MAX_MALLOC_BLOCKS 4
@@ -417,6 +418,7 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 		buf += to_copy;
 		*pos += (loff_t)to_copy;
 		count -= to_copy;
+
 	}
 	if (end_pos > inode->i_size) {
 		uint32_t end32 = (uint32_t)(end_pos & 0xFFFFFFFFUL);
