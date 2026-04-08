@@ -276,6 +276,19 @@ struct ext4_sb_info {
 	/* 目录 HTree 哈希参数（从 superblock 读取） */
 	uint32_t	s_hash_seed[4];
 	uint8_t		s_def_hash_version;
+
+	/* 块分配器状态（参考 Linux ext4 的 goal + bitmap cache 思路） */
+	uint32_t	s_alloc_goal_group;      /* next-fit 起始组 */
+	uint32_t	s_alloc_goal_bit;        /* 组内 next-fit 起始 bit */
+	uint32_t	s_alloc_last_group;      /* 最近一次成功分配所在组 */
+	uint32_t	s_alloc_last_bit;        /* 最近一次成功分配所在 bit */
+
+	uint32_t	s_bmap_cache_group;      /* 当前缓存的块位图所属组 */
+	uint8_t		s_bmap_cache_valid;      /* 位图缓存是否有效 */
+	uint8_t		s_bmap_cache_dirty;      /* 位图缓存是否已修改 */
+	char		*s_bmap_cache_buf;       /* 位图缓存数据（大小为 block_size） */
+
+	uint32_t	s_bg_sync_pending;       /* 延迟写回 group desc 计数 */
 };
 
 /* Ext4 Inode 信息（内存结构，挂到 inode->i_private）
@@ -342,6 +355,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks);
 /* 块分配和释放 */
 uint32_t ext4_new_block(struct super_block *sb);
 int ext4_free_block(struct super_block *sb, uint32_t blocknr);
+int ext4_balloc_flush(struct super_block *sb);
 
 /* Inode 分配和释放 */
 uint32_t ext4_new_inode(struct super_block *sb);

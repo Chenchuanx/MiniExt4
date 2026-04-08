@@ -8,7 +8,7 @@
 #include <fs/dentry.h>
 
 #ifndef NULL
-#define NULL ((void *)0)
+#define NULL 0
 #endif
 
 /* 前向声明 */
@@ -34,6 +34,7 @@ static void *simple_memset(void *s, int c, size_t n)
 }
 #define memcpy simple_memcpy
 #define memset simple_memset
+
 
 /* 简化的内存分配（使用静态池） */
 #define MAX_MALLOC 4096
@@ -346,7 +347,7 @@ static ssize_t ext4_file_read(struct file *file, char *buf, size_t count, loff_t
 		int ret;
 
 		/* 通过直接块 + 间接块映射获取数据块号（不分配新块） */
-		if (ext4_get_data_block(inode, block_idx, 0, &blocknr, NULL) < 0) {
+		if (ext4_get_data_block(inode, block_idx, 0, &blocknr, 0) < 0) {
 			free(block_buf);
 			return -1;
 		}

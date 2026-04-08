@@ -429,7 +429,6 @@ static void cmd_test_fill(const int8_t *arg) {
 
 	unsigned long total_req = nbytes;
 	unsigned long total_written = 0;
-
 	while (nbytes > 0) {
 		int to_write = (nbytes > (unsigned long)block_size)
 			? block_size

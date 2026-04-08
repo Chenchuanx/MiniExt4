@@ -639,8 +639,25 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     sbi->s_hash_seed[2] = esb->s_hash_seed[2];
     sbi->s_hash_seed[3] = esb->s_hash_seed[3];
     sbi->s_def_hash_version = esb->s_def_hash_version;
+    sbi->s_alloc_goal_group = 0;
+    sbi->s_alloc_goal_bit = 1;
+    sbi->s_alloc_last_group = 0;
+    sbi->s_alloc_last_bit = 1;
+    sbi->s_bmap_cache_group = 0;
+    sbi->s_bmap_cache_valid = 0;
+    sbi->s_bmap_cache_dirty = 0;
+    sbi->s_bmap_cache_buf = 0;
+    sbi->s_bg_sync_pending = 0;
     sb_log_block_size = esb->s_log_block_size;
     memcpy(sb_uuid, esb->s_uuid, sizeof(sb_uuid));
+
+    sbi->s_bmap_cache_buf = (char *)malloc(block_size);
+    if (!sbi->s_bmap_cache_buf) {
+        printf("ext4: alloc bitmap cache failed\n");
+        free(sbi);
+        free(buf);
+        return -1;
+    }
     
     /* 计算块组数 */
     if (sbi->s_blocks_count == 0) {
@@ -1069,6 +1086,11 @@ static void ext4_kill_sb(struct super_block *sb)
     
     sbi = (struct ext4_sb_info *)sb->s_fs_info;
     if (sbi) {
+        (void)ext4_balloc_flush(sb);
+        if (sbi->s_bmap_cache_buf) {
+            free(sbi->s_bmap_cache_buf);
+            sbi->s_bmap_cache_buf = NULL;
+        }
         if (sbi->s_group_desc) {
             free(sbi->s_group_desc);
         }
