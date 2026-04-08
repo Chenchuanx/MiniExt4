@@ -14,6 +14,7 @@
 /* 前向声明 */
 extern int ext4_read_block(uint32_t blocknr, void *buf);
 extern int ext4_write_block(uint32_t blocknr, const void *buf);
+extern int ext4_write_blocks(uint32_t blocknr, uint32_t blocks, const void *buf);
 extern uint32_t ext4_get_block_size(void);
 
 /* 简化的内存操作函数 */
@@ -34,6 +35,7 @@ static void *simple_memset(void *s, int c, size_t n)
 }
 #define memcpy simple_memcpy
 #define memset simple_memset
+
 
 
 
@@ -401,8 +403,45 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 		if (to_copy > count) to_copy = count;
 		/* 整块对齐写：直接从用户缓冲区落盘，避免 memset/memcpy 或读改写 */
 		if (off_in_block == 0 && to_copy == block_size) {
-			ret = ext4_write_block(blocknr, buf);
+			uint32_t run_blocks = 1;
+			uint32_t max_blocks_by_count = count / block_size;
+			uint32_t next_lblock = block_idx + 1;
+			uint32_t prev_pblock = blocknr;
+
+			/* 连续块批量写：减少 ext4_write_block/ATA 命令次数。 */
+			if (max_blocks_by_count > 1) {
+				uint32_t probe_limit = max_blocks_by_count;
+				if (probe_limit > 64U) probe_limit = 64U;
+				while (run_blocks < probe_limit) {
+					uint32_t pblk2 = 0;
+					int is_new2 = 0;
+					if (ext4_get_data_block(inode, next_lblock, 1, &pblk2, &is_new2) < 0) {
+						break;
+					}
+					if (pblk2 == 0 || pblk2 != prev_pblock + 1) {
+						break;
+					}
+					prev_pblock = pblk2;
+					next_lblock++;
+					run_blocks++;
+				}
+			}
+
+			if (run_blocks > 1) {
+				ret = ext4_write_blocks(blocknr, run_blocks, buf);
+			} else {
+				ret = ext4_write_block(blocknr, buf);
+			}
 			if (ret < 0) { free(block_buf); return -1; }
+
+			{
+				size_t advanced = (size_t)run_blocks * block_size;
+				written += (ssize_t)advanced;
+				buf += advanced;
+				*pos += (loff_t)advanced;
+				count -= advanced;
+				continue;
+			}
 		} else {
 			if (is_new) {
 				memset(block_buf, 0, block_size);

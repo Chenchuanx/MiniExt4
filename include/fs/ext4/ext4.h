@@ -346,6 +346,7 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 /* 函数声明 */
 int ext4_read_block(uint32_t blocknr, void *buf);
 int ext4_write_block(uint32_t blocknr, const void *buf);
+int ext4_write_blocks(uint32_t blocknr, uint32_t blocks, const void *buf);
 void ext4_set_block_size(uint32_t size);
 uint32_t ext4_get_block_size(void);
 
