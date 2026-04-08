@@ -7,6 +7,7 @@
 #include <linux/fs.h>
 #include <fs/ext4/ext4.h>
 #include <lib/printf.h>
+#include <drivers/ata.h>
 
 #ifndef NULL
 #define NULL ((void *)0)
@@ -290,12 +291,15 @@ uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *ou
 {
 	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
 	uint32_t block_size = ext4_get_block_size();
-	uint32_t blocks_per_group = sbi->s_blocks_per_group;
+	uint32_t blocks_per_group;
+	uint32_t blocks_count = ext4_get_blocks_count();
+	uint32_t dev_blocks = 0;
 	uint32_t new_block = 0, alloc_len = 0;
 	struct ext4_group_desc gd_local;
 	uint32_t i, start_i, limit_i;
 	uint32_t g, start_group;
 	uint32_t groups_scanned = 0;
+	uint32_t groups_count;
 	int ret;
 	
 	if (!sbi || !sbi->s_group_desc) {
@@ -304,27 +308,73 @@ uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *ou
 	if (!sbi->s_bmap_cache_buf) {
 		return 0;
 	}
+	if (block_size == 0) {
+		return 0;
+	}
+	/* 一个块位图可表示的块数；按 ext4 位图布局，这是每组可分配上限。 */
+	blocks_per_group = block_size * 8;
+	if (blocks_per_group == 0) {
+		return 0;
+	}
+	/* blocks_count 必须来自挂载时解析的 on-disk superblock。 */
+	/* 以多个来源交叉约束几何，避免任一来源漂移导致越界分配。 */
+	if (sbi->s_blocks_count > 0) {
+		if (blocks_count == 0 || sbi->s_blocks_count < blocks_count) {
+			blocks_count = sbi->s_blocks_count;
+		}
+	}
+	if (blocks_count == 0) return 0;
+	{
+		uint32_t sectors_per_block = block_size / ATA_SECTOR_SIZE;
+		uint32_t total_sectors = ata_get_total_sectors();
+		if (sectors_per_block == 0) sectors_per_block = 1;
+		if (total_sectors > 0) {
+			dev_blocks = total_sectors / sectors_per_block;
+			if (dev_blocks > 0 && (blocks_count == 0 || blocks_count > dev_blocks)) {
+				blocks_count = dev_blocks;
+			}
+		}
+	}
 	if (goal_len == 0) {
 		goal_len = 1;
+	}
+	if (blocks_count == 0 || blocks_per_group == 0) {
+		return 0;
+	}
+	if (blocks_per_group > blocks_count) {
+		blocks_per_group = blocks_count;
+	}
+	if (sbi->s_groups_count > 0) {
+		uint32_t by_groups = sbi->s_groups_count * blocks_per_group;
+		if (by_groups > 0 && by_groups < blocks_count) {
+			blocks_count = by_groups;
+		}
+	}
+	groups_count = (blocks_count + blocks_per_group - 1) / blocks_per_group;
+	if (groups_count == 0) {
+		return 0;
 	}
 
 	/* Linux ext4 类似思路：从 goal 开始做 next-fit，而不是每次从组 0 扫描 */
 	start_group = sbi->s_alloc_goal_group;
-	if (start_group >= sbi->s_groups_count) start_group = 0;
+	if (start_group >= groups_count) start_group = 0;
 
-	for (groups_scanned = 0; groups_scanned < sbi->s_groups_count; groups_scanned++) {
+	for (groups_scanned = 0; groups_scanned < groups_count; groups_scanned++) {
 		uint32_t group_blocks;
 		uint32_t group_start;
 		char *bitmap_buf;
 		int found = 0;
 
 		g = start_group + groups_scanned;
-		if (g >= sbi->s_groups_count) g -= sbi->s_groups_count;
+		if (g >= groups_count) g -= groups_count;
 
 		group_blocks = blocks_per_group;
 		group_start = g * blocks_per_group;
-		if (group_start + group_blocks > sbi->s_blocks_count)
-			group_blocks = sbi->s_blocks_count - group_start;
+		if (group_start >= blocks_count) {
+			continue;
+		}
+		if (group_start + group_blocks > blocks_count)
+			group_blocks = blocks_count - group_start;
 		if (group_blocks <= 1) continue;
 		if (ext4_read_group_desc(sb, g, &gd_local) < 0) continue;
 		if (gd_local.bg_block_bitmap_lo == 0) continue;
@@ -399,6 +449,15 @@ uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *ou
 			}
 		}
 		if (!found) continue;
+		if (new_block < group_start || new_block >= blocks_count) {
+			return 0;
+		}
+		if (alloc_len == 0) {
+			return 0;
+		}
+		if (new_block + alloc_len > blocks_count) {
+			return 0;
+		}
 
 		sbi->s_bmap_cache_dirty = 1;
 
@@ -419,7 +478,7 @@ uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *ou
 		sbi->s_alloc_goal_group = g;
 		sbi->s_alloc_goal_bit = i + alloc_len;
 		if (sbi->s_alloc_goal_bit >= group_blocks) {
-			sbi->s_alloc_goal_group = (g + 1 < sbi->s_groups_count) ? (g + 1) : 0;
+			sbi->s_alloc_goal_group = (g + 1 < groups_count) ? (g + 1) : 0;
 			sbi->s_alloc_goal_bit = 1;
 		}
 

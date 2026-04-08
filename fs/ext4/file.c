@@ -301,11 +301,7 @@ static int ext4_get_data_block(struct inode *inode, uint32_t lblock,
 
 		if (ei && (ei->i_flags & EXT4_INODE_FLAG_EXTENTS)) {
 			/* 启用 extents：优先走 extents 版本 */
-			int ret = ext4_extents_get_block(inode, lblock, create, out_block, is_new);
-			if (ret == 0) {
-				return 0;
-			}
-			/* extents 出错时再回退到传统实现，避免 I/O 直接失败 */
+			return ext4_extents_get_block(inode, lblock, create, out_block, is_new);
 		}
 	}
 
@@ -376,6 +372,7 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 	struct super_block *sb = inode->i_sb;
 	struct ext4_inode_info *ei = (struct ext4_inode_info *)inode->i_private;
 	uint32_t block_size = ext4_get_block_size();
+	uint32_t sectors_per_block = (block_size + 511U) / 512U;
 	loff_t end_pos = *pos + (loff_t)count;
 	ssize_t written = 0;
 	char *block_buf;
@@ -404,6 +401,7 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 		/* 整块对齐写：直接从用户缓冲区落盘，避免 memset/memcpy 或读改写 */
 		if (off_in_block == 0 && to_copy == block_size) {
 			uint32_t run_blocks = 1;
+			uint32_t new_run_blocks = is_new ? 1U : 0U;
 			uint32_t max_blocks_by_count = count / block_size;
 			uint32_t next_lblock = block_idx + 1;
 			uint32_t prev_pblock = blocknr;
@@ -421,6 +419,9 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 					if (pblk2 == 0 || pblk2 != prev_pblock + 1) {
 						break;
 					}
+					if (is_new2) {
+						new_run_blocks++;
+					}
 					prev_pblock = pblk2;
 					next_lblock++;
 					run_blocks++;
@@ -433,6 +434,10 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 				ret = ext4_write_block(blocknr, buf);
 			}
 			if (ret < 0) { free(block_buf); return -1; }
+			if (new_run_blocks > 0) {
+				inode->i_blocks += (unsigned long)new_run_blocks * (unsigned long)sectors_per_block;
+				inode->i_state |= I_DIRTY;
+			}
 
 			{
 				size_t advanced = (size_t)run_blocks * block_size;
@@ -452,6 +457,10 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 			memcpy(block_buf + off_in_block, buf, to_copy);
 			ret = ext4_write_block(blocknr, block_buf);
 			if (ret < 0) { free(block_buf); return -1; }
+			if (is_new) {
+				inode->i_blocks += (unsigned long)sectors_per_block;
+				inode->i_state |= I_DIRTY;
+			}
 		}
 		written += (ssize_t)to_copy;
 		buf += to_copy;
@@ -460,10 +469,7 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 
 	}
 	if (end_pos > inode->i_size) {
-		uint32_t end32 = (uint32_t)(end_pos & 0xFFFFFFFFUL);
 		inode->i_size = end_pos;
-		inode->i_blocks = (unsigned long)((end32 + 511) / 512);
-		/* 延迟写 inode，避免每次 write 都读改写 inode 表（顺序写大文件时开销极大） */
 		inode->i_state |= I_DIRTY;
 	}
 	free(block_buf);

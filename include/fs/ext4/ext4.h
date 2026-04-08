@@ -349,6 +349,8 @@ int ext4_write_block(uint32_t blocknr, const void *buf);
 int ext4_write_blocks(uint32_t blocknr, uint32_t blocks, const void *buf);
 void ext4_set_block_size(uint32_t size);
 uint32_t ext4_get_block_size(void);
+uint32_t ext4_get_blocks_count(void);
+uint32_t ext4_get_blocks_per_group(void);
 
 /* Ext4 文件系统初始化（格式化） */
 int ext4_mkfs(uint32_t block_size, uint32_t total_blocks);

@@ -1,6 +1,7 @@
 /* 
  * Ext4 超级块和挂载实现
  */
+#include "lib/syscall.h"
 #include <linux/fs.h>
 #include <fs/fs_types.h>
 #include <fs/ext4/ext4.h>
@@ -77,6 +78,20 @@ static void simple_free(void *ptr)
 
 #define malloc simple_malloc
 #define free simple_free
+
+/* mount 时从 on-disk superblock 缓存的几何信息，供分配器做硬边界。 */
+static uint32_t ext4_fs_blocks_count;
+static uint32_t ext4_fs_blocks_per_group;
+
+uint32_t ext4_get_blocks_count(void)
+{
+	return ext4_fs_blocks_count;
+}
+
+uint32_t ext4_get_blocks_per_group(void)
+{
+	return ext4_fs_blocks_per_group;
+}
 
 /* 前向声明 */
 static struct dentry *ext4_mount(struct file_system_type *fs_type,
@@ -693,6 +708,8 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         if (fallback_ipg == 0) fallback_ipg = 1;
         sbi->s_inodes_per_group = fallback_ipg;
     }
+    ext4_fs_blocks_count = sbi->s_blocks_count;
+    ext4_fs_blocks_per_group = sbi->s_blocks_per_group;
     sbi->s_groups_count = (sbi->s_blocks_count + sbi->s_blocks_per_group - 1) / sbi->s_blocks_per_group;
     
     /* 读取第一个块组描述符（简化版，只读第一个） */

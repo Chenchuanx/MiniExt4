@@ -20,6 +20,7 @@
 extern int ext4_read_block(uint32_t blocknr, void *buf);
 extern int ext4_write_block(uint32_t blocknr, const void *buf);
 extern uint32_t ext4_get_block_size(void);
+extern uint32_t ext4_get_blocks_count(void);
 extern uint32_t ext4_new_block(struct super_block *sb);
 extern uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *out_len);
 
@@ -86,6 +87,7 @@ static void simple_free(void *ptr)
 
 #define EXT4_PREALLOC_GOAL_LEN 32U
 #define EXT4_EXT_MAX_DEPTH 5
+#define EXT4_EXT_INIT_MAX_LEN 0x7fffU
 
 struct ext4_ext_path {
 	struct ext4_extent_header *eh;
@@ -243,17 +245,25 @@ static int ext4_extents_insert(struct ext4_extent_header *eh,
 		/* 尾部相邻： [ee_block, ee_block+ee_len-1] 后面紧跟 new_ex */
 		if (ee_block + ee_len == new_ex->ee_block &&
 		    ee_start + ee_len == new_start) {
-			extents[i].ee_len = (uint16_t)(ee_len + new_ex->ee_len);
+			uint32_t merged_len = (uint32_t)ee_len + (uint32_t)new_ex->ee_len;
+			if (merged_len > EXT4_EXT_INIT_MAX_LEN) {
+				continue;
+			}
+			extents[i].ee_len = (uint16_t)merged_len;
 			return 0;
 		}
 
 		/* 头部相邻：new_ex 在前，紧挨着当前 extent */
 		if (new_ex->ee_block + new_ex->ee_len == ee_block &&
 		    new_start + new_ex->ee_len == ee_start) {
+			uint32_t merged_len = (uint32_t)ee_len + (uint32_t)new_ex->ee_len;
+			if (merged_len > EXT4_EXT_INIT_MAX_LEN) {
+				continue;
+			}
 			extents[i].ee_block    = new_ex->ee_block;
 			extents[i].ee_start_lo = new_ex->ee_start_lo;
 			extents[i].ee_start_hi = new_ex->ee_start_hi;
-			extents[i].ee_len      = (uint16_t)(ee_len + new_ex->ee_len);
+			extents[i].ee_len      = (uint16_t)merged_len;
 			return 0;
 		}
 	}
@@ -483,6 +493,12 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 		}
 
 		{
+			struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+			uint32_t fs_blocks_count = ext4_get_blocks_count();
+			if (sbi && sbi->s_blocks_count > 0 &&
+			    (fs_blocks_count == 0 || sbi->s_blocks_count < fs_blocks_count)) {
+				fs_blocks_count = sbi->s_blocks_count;
+			}
 			uint32_t alloc_len = 1;
 			uint32_t new_block = ext4_new_blocks(sb, EXT4_PREALLOC_GOAL_LEN, &alloc_len);
 			struct ext4_extent new_ex;
@@ -496,6 +512,10 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 				ext4_extents_free_path(path, depth);
 				return -1;
 			}
+			if (fs_blocks_count == 0 || new_block >= fs_blocks_count) {
+				ext4_extents_free_path(path, depth);
+				return -1;
+			}
 
 			memset(&new_ex, 0, sizeof(new_ex));
 			new_ex.ee_block = lblock;
@@ -505,8 +525,22 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 			if (alloc_len > 0x7fffU) {
 				alloc_len = 0x7fffU;
 			}
+			if (new_block + alloc_len > fs_blocks_count) {
+				alloc_len = fs_blocks_count - new_block;
+				if (alloc_len == 0) {
+					ext4_extents_free_path(path, depth);
+					return -1;
+				}
+			}
 			new_ex.ee_len = (uint16_t)alloc_len;
 			ext4_extent_set_pblock(&new_ex, (uint64_t)new_block);
+			/* file.c 会对 is_new 记 1 个块，这里补上其余预分配块的 i_blocks 记账。 */
+			if (alloc_len > 1) {
+				uint32_t sectors_per_block = (block_size + 511U) / 512U;
+				inode->i_blocks += (unsigned long)(alloc_len - 1U) *
+						   (unsigned long)sectors_per_block;
+				inode->i_state |= I_DIRTY;
+			}
 
 			ret = ext4_extents_insert(cur_leaf, &new_ex);
 			if (ret == 0) {
@@ -577,6 +611,12 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 				right_blk = ext4_new_block(sb);
 				if (right_blk == 0) {
+					free(tmp);
+					free(right_buf);
+					ext4_extents_free_path(path, depth);
+					return -1;
+				}
+				if (right_blk >= fs_blocks_count) {
 					free(tmp);
 					free(right_buf);
 					ext4_extents_free_path(path, depth);
@@ -692,6 +732,12 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
+						if (new_iblk >= fs_blocks_count) {
+							free(tmpi);
+							free(right_ibuf);
+							ext4_extents_free_path(path, depth);
+							return -1;
+						}
 						if (path[level].blocknr != 0 &&
 						    ext4_write_block(path[level].blocknr, path[level].buf) < 0) {
 							free(tmpi);
@@ -722,6 +768,7 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 					uint32_t new_right_blk;
 					struct ext4_extent_header *root = (struct ext4_extent_header *)ei->i_block;
 					struct ext4_extent_idx *root_idx;
+					uint32_t old_root_first_lblk;
 
 					if (root->eh_depth >= EXT4_EXT_MAX_DEPTH) {
 						ext4_extents_free_path(path, depth);
@@ -730,8 +777,19 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 					old_root = *root;
 					old_root_data = (char *)(root + 1);
+					if (old_root.eh_entries == 0) {
+						ext4_extents_free_path(path, depth);
+						return -1;
+					}
+					old_root_first_lblk = (old_root.eh_depth == 0)
+						? ((struct ext4_extent *)old_root_data)[0].ee_block
+						: ((struct ext4_extent_idx *)old_root_data)[0].ei_block;
 					old_root_blk = ext4_new_block(sb);
 					if (old_root_blk == 0) {
+						ext4_extents_free_path(path, depth);
+						return -1;
+					}
+					if (old_root_blk >= fs_blocks_count) {
 						ext4_extents_free_path(path, depth);
 						return -1;
 					}
@@ -763,9 +821,7 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 					new_right_root->eh_entries = 2;
 					root_idx = (struct ext4_extent_idx *)(new_right_root + 1);
 					memset(root_idx, 0, sizeof(struct ext4_extent_idx) * 2);
-					root_idx[0].ei_block = (old_root.eh_depth == 0)
-						? ((struct ext4_extent *)(old_root_data))[0].ee_block
-						: ((struct ext4_extent_idx *)(old_root_data))[0].ei_block;
+					root_idx[0].ei_block = old_root_first_lblk;
 					ext4_idx_set_pblock(&root_idx[0], (uint64_t)old_root_blk);
 					root_idx[1].ei_block = split_right_ex.ee_block;
 					ext4_idx_set_pblock(&root_idx[1], (uint64_t)new_right_blk);
