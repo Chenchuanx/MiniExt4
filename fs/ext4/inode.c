@@ -329,8 +329,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	struct inode *inode;
 	unsigned long ino;
 	struct ext4_inode_info *ei;
-	uint32_t root_blocknr;	/* HTree 根块（包含 . / .. + 索引头） */
-	uint32_t leaf_blocknr;	/* 第一个叶子数据块（实际目录项存放处） */
+	uint32_t blocknr;
 	char *buf;
 	struct ext4_dir_entry *de;
 	uint16_t rec1, rec2;
@@ -340,37 +339,22 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (ino == 0) {
 		return -1;
 	}
-	/* 为目录分配两个块：
-	 * - root_blocknr：HTree 根块（包含 . / .. 与 HTree 索引头）
-	 * - leaf_blocknr：首个叶子数据块（普通目录项放在这里）
-	 *
-	 * 目前实现为“单层 HTree”：所有非 . / .. 的目录项都放在 leaf_blocknr 块中。
-	 */
-	root_blocknr = ext4_new_block(sb);
-	if (root_blocknr == 0) {
-		ext4_free_inode(sb, (uint32_t)ino);
-		return -1;
-	}
-	leaf_blocknr = ext4_new_block(sb);
-	if (leaf_blocknr == 0) {
-		ext4_free_block(sb, root_blocknr);
+	/* 新目录默认只占 1 个块，保持与 Linux 常见行为一致（4KB 块时目录大小为 4KB）。 */
+	blocknr = ext4_new_block(sb);
+	if (blocknr == 0) {
 		ext4_free_inode(sb, (uint32_t)ino);
 		return -1;
 	}
 	inode = sb->s_op->alloc_inode(sb);
 	if (!inode) {
-		ext4_free_block(sb, leaf_blocknr);
-		ext4_free_block(sb, root_blocknr);
+		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
 		return -1;
 	}
 	inode->i_ino = ino;
 	inode->i_mode = S_IFDIR | (mode & 0777);
-	/* HTree 目录占 2 个数据块：块 0 为 dx 根（. / .. + 索引），块 1 为叶子。
-	 * i_size / i_blocks 必须覆盖全部目录字节，否则宿主 Linux 只映射第一块，
-	 * 第二块上的目录项（文件、嵌套目录名）对内核不可见。 */
-	inode->i_size = (uint64_t)block_size * 2;
-	inode->i_blocks = (block_size / 512) * 2;
+	inode->i_size = (uint64_t)block_size;
+	inode->i_blocks = (block_size / 512);
 	inode->i_nlink = 2; /* . 和 .. */
 	inode->i_atime = rtc_get_unix_time();
 	inode->i_mtime = inode->i_atime;
@@ -381,19 +365,14 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	ei = (struct ext4_inode_info *)inode->i_private;
 	if (ei) {
 		memset(ei->i_block, 0, sizeof(ei->i_block));
-		/* i_block[0] = HTree 根块，i_block[1] = 第一个叶子块 */
-		ei->i_block[0] = root_blocknr;
-		ei->i_block[1] = leaf_blocknr;
-		/* 标记该目录使用 HTree 索引（与 Linux EXT4_INDEX_FL 一致） */
-		ei->i_flags |= EXT4_INODE_FLAG_INDEX;
+		ei->i_block[0] = blocknr;
 	}
 
-	/* === 初始化 HTree 根块：包含 . 和 ..，以及 HTree 根信息 === */
+	/* 初始化目录块：仅包含 "."、".."，其余空间作为空闲目录项。 */
 	buf = (char *)malloc(block_size);
 	if (!buf) {
 		sb->s_op->destroy_inode(inode);
-		ext4_free_block(sb, leaf_blocknr);
-		ext4_free_block(sb, root_blocknr);
+		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
 		return -1;
 	}
@@ -418,79 +397,31 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	de->name[0] = '.';
 	de->name[1] = '.';
 
-	/* 紧随其后的是一个“伪目录项头” + HTree 根信息 + 至少一个 dx_entry
-	 *
-	 * 伪目录项头用于让非 HTree 感知的代码在扫描目录块时，把整块后半部分
-	 * 当作一个“空闲记录”（inode == 0），从而跳过 HTree 数据结构。 */
+	/* 剩余空间作为一个空闲目录项，供后续 ext4_add_entry 插入真实目录项。 */
 	{
 		uint32_t off = rec1 + rec2;
 		struct ext4_dir_entry *fake = (struct ext4_dir_entry *)((char *)buf + off);
-		uint16_t fake_len = (uint16_t)(block_size - off);
-		struct ext4_dx_root_info *info;
-		struct ext4_dx_countlimit *cl;
-		struct ext4_dx_entry *entries;
-		struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
-
-		/* 伪目录项头：inode == 0，name_len == 0，file_type == 0 */
 		fake->inode = 0;
-		fake->rec_len = fake_len;
+		fake->rec_len = (uint16_t)(block_size - off);
 		fake->name_len = 0;
 		fake->file_type = 0;
-
-		/* 在伪目录项头之后布置 HTree 根信息与一个索引条目 */
-		info = (struct ext4_dx_root_info *)((char *)fake + sizeof(struct ext4_dir_entry));
-		info->reserved_zero = 0;
-		info->hash_version = sbi ? sbi->s_def_hash_version : EXT4_DX_HASH_LEGACY;
-		info->info_length = (uint8_t)sizeof(struct ext4_dx_root_info);
-		info->indirect_levels = 0; /* 单层 HTree，无额外 dx_node */
-		info->unused_flags = 0;
-
-		cl = (struct ext4_dx_countlimit *)(info + 1);
-		entries = (struct ext4_dx_entry *)(cl + 1);
-		cl->limit = (uint16_t)((fake_len - (uint16_t)sizeof(struct ext4_dir_entry) -
-					(uint16_t)sizeof(struct ext4_dx_root_info) -
-					(uint16_t)sizeof(struct ext4_dx_countlimit)) /
-				       (uint16_t)sizeof(struct ext4_dx_entry));
-		cl->count = 1;
-		/* 单层 HTree：仅一个叶子块，逻辑块号为 1，对应 i_block[1] */
-		entries[0].hash = 0xFFFFFFFFU; /* 覆盖所有哈希范围 */
-		entries[0].block = 1;	      /* 逻辑块号 1 -> i_block[1] */
 	}
 
-	ret = ext4_write_block(root_blocknr, buf);
+	ret = ext4_write_block(blocknr, buf);
 	if (ret < 0) {
 		free(buf);
 		sb->s_op->destroy_inode(inode);
-		ext4_free_block(sb, leaf_blocknr);
-		ext4_free_block(sb, root_blocknr);
+		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
 		return -1;
 	}
-
-	/* 初始化第一个叶子块：当前为空目录项区域（整个块一个空闲记录） */
-	memset(buf, 0, block_size);
-	de = (struct ext4_dir_entry *)buf;
-	de->inode = 0;
-	de->rec_len = (uint16_t)block_size;
-	de->name_len = 0;
-	de->file_type = 0;
-
-	ret = ext4_write_block(leaf_blocknr, buf);
 	free(buf);
-	if (ret < 0) {
-		sb->s_op->destroy_inode(inode);
-		ext4_free_block(sb, leaf_blocknr);
-		ext4_free_block(sb, root_blocknr);
-		ext4_free_inode(sb, (uint32_t)ino);
-		return -1;
-	}
 	sb->s_op->write_inode(inode, NULL);
 	if (ext4_add_entry(dir, &dentry->d_name, ino) != 0) {
 		sb->s_op->destroy_inode(inode);
-		/* 失败时仅释放新目录自身的两个块与 inode；
+		/* 失败时仅释放新目录自身的块与 inode；
 		 * 父目录中未成功添加目录项，不需要额外回滚。 */
-		ext4_free_block(sb, leaf_blocknr);
-		ext4_free_block(sb, root_blocknr);
+		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
 		return -1;
 	}
