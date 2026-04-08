@@ -116,6 +116,8 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	inode->i_mtime = inode->i_atime;
 	inode->i_ctime = inode->i_atime;
 	inode->i_sb = sb;
+	inode->i_op = &ext4_file_inode_operations;
+	inode->i_fop = &ext4_file_operations;
 	ei = (struct ext4_inode_info *)inode->i_private;
 	if (ei) {
 		struct ext4_extent_header *eh;
@@ -198,6 +200,8 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	inode->i_mtime = inode->i_atime;
 	inode->i_ctime = inode->i_atime;
 	inode->i_sb = sb;
+	inode->i_op = &ext4_dir_inode_operations;
+	inode->i_fop = &ext4_dir_operations;
 	ei = (struct ext4_inode_info *)inode->i_private;
 	if (ei) {
 		memset(ei->i_block, 0, sizeof(ei->i_block));

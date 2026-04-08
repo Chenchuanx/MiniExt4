@@ -18,7 +18,7 @@
 static const char *skip_slashes(const char *path)
 {
 	if (!path) {
-		return NULL;
+		return (const char *)0;
 	}
 	while (*path == '/') {
 		path++;
@@ -87,12 +87,12 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 	int name_len;
 
 	if (!start || !path) {
-		return NULL;
+		return (struct dentry *)0;
 	}
 
 	/* 起点必须关联 inode */
 	if (!start->d_inode) {
-		return NULL;
+		return (struct dentry *)0;
 	}
 
 	dentry = start;
@@ -101,7 +101,7 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 	/* 绝对路径：以 '/' 开头，从根开始；相对路径：从 start 开始 */
 	p = skip_slashes(p);
 	if (!p) {
-		return NULL;
+		return (struct dentry *)0;
 	}
 
 	/* 特殊情况：路径为 "/" 或仅包含若干 '/' */
@@ -114,7 +114,7 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 		struct inode *dir;
 
 		if (ret < 0) {
-			return NULL;
+			return (struct dentry *)0;
 		}
 		if (ret == 0) {
 			/* 没有更多分量 */
@@ -137,7 +137,7 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 
 		dir = dentry->d_inode;
 		if (!dir || !dir->i_op || !dir->i_op->lookup) {
-			return NULL;
+			return (struct dentry *)0;
 		}
 
 		/* 构造 qstr，并优先使用 dcache */
@@ -153,7 +153,7 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 				/* 未命中缓存：分配新 dentry，并让文件系统 lookup 填充 */
 				child = d_alloc(dentry, &q);
 				if (!child) {
-					return NULL;
+					return (struct dentry *)0;
 				}
 				/* 文件系统的 lookup 负责设置 child->d_inode */
 				child = dir->i_op->lookup(dir, child, 0);
@@ -161,7 +161,10 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 
 			if (!child || !child->d_inode) {
 				/* 未找到目标 */
-				return NULL;
+				if (child) {
+					dput(child);
+				}
+				return (struct dentry *)0;
 			}
 
 			dentry = child;
@@ -186,7 +189,7 @@ next:
 struct dentry *vfs_lookup_root(struct super_block *sb, const char *path)
 {
 	if (!sb || !sb->s_root) {
-		return NULL;
+		return (struct dentry *)0;
 	}
 	return vfs_path_lookup(sb->s_root, path);
 }

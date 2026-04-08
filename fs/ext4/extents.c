@@ -525,14 +525,20 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 			if (cur_leaf->eh_entries >= cur_leaf->eh_max) {
 				struct ext4_extent *leaf_exts = (struct ext4_extent *)(cur_leaf + 1);
-				struct ext4_extent tmp[340];
+				struct ext4_extent *tmp;
 				int n = cur_leaf->eh_entries;
 				int i, mid;
 				char *right_buf;
 				struct ext4_extent_header *right_eh;
 				uint32_t right_blk;
 
-				if (n <= 0 || n >= (int)(sizeof(tmp) / sizeof(tmp[0])) - 1) {
+				tmp = (struct ext4_extent *)malloc(block_size);
+				if (!tmp) {
+					ext4_extents_free_path(path, depth);
+					return -1;
+				}
+				if (n <= 0 || n >= (int)(block_size / sizeof(struct ext4_extent)) - 1) {
+					free(tmp);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
@@ -555,6 +561,7 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 				right_buf = (char *)malloc(block_size);
 				if (!right_buf) {
+					free(tmp);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
@@ -570,22 +577,26 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 				right_blk = ext4_new_block(sb);
 				if (right_blk == 0) {
+					free(tmp);
 					free(right_buf);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
 				if (path[depth].blocknr != 0 &&
 				    ext4_write_block(path[depth].blocknr, path[depth].buf) < 0) {
+					free(tmp);
 					free(right_buf);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
 				if (ext4_write_block(right_blk, right_buf) < 0) {
+					free(tmp);
 					free(right_buf);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
 				split_right_ex = ((struct ext4_extent *)(right_eh + 1))[0];
+				free(tmp);
 				free(right_buf);
 
 				need_promote = 1;
@@ -625,7 +636,7 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 						}
 						need_promote = 0;
 					} else {
-						struct ext4_extent_idx tmpi[340];
+						struct ext4_extent_idx *tmpi;
 						int nidx = ieh->eh_entries;
 						int midx;
 						char *right_ibuf;
@@ -634,7 +645,13 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 						struct ext4_extent_idx *right_arr;
 						uint32_t new_iblk;
 
-						if (nidx <= 0 || nidx >= (int)(sizeof(tmpi) / sizeof(tmpi[0])) - 1) {
+						tmpi = (struct ext4_extent_idx *)malloc(block_size);
+						if (!tmpi) {
+							ext4_extents_free_path(path, depth);
+							return -1;
+						}
+						if (nidx <= 0 || nidx >= (int)(block_size / sizeof(struct ext4_extent_idx)) - 1) {
+							free(tmpi);
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
@@ -657,6 +674,7 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 						right_ibuf = (char *)malloc(block_size);
 						if (!right_ibuf) {
+							free(tmpi);
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
@@ -669,17 +687,20 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 						new_iblk = ext4_new_block(sb);
 						if (new_iblk == 0) {
+							free(tmpi);
 							free(right_ibuf);
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
 						if (path[level].blocknr != 0 &&
 						    ext4_write_block(path[level].blocknr, path[level].buf) < 0) {
+							free(tmpi);
 							free(right_ibuf);
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
 						if (ext4_write_block(new_iblk, right_ibuf) < 0) {
+							free(tmpi);
 							free(right_ibuf);
 							ext4_extents_free_path(path, depth);
 							return -1;
@@ -687,6 +708,7 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 						split_right_ex.ee_block = right_arr[0].ei_block;
 						right_blk = new_iblk;
+						free(tmpi);
 						free(right_ibuf);
 						need_promote = 1;
 					}
