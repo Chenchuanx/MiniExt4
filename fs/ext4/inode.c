@@ -17,6 +17,8 @@
 extern int ext4_read_block(uint32_t blocknr, void *buf);
 extern int ext4_write_block(uint32_t blocknr, const void *buf);
 extern uint32_t ext4_get_block_size(void);
+extern int ext4_free_block(struct super_block *sb, uint32_t blocknr);
+extern int ext4_free_inode(struct super_block *sb, uint32_t ino);
 
 /* 简化的内存操作函数 */
 static void *simple_memset(void *s, int c, size_t n)
@@ -63,6 +65,180 @@ static void simple_free(void *p)
 #define free simple_free
 
 #define EXT4_INODE_SIZE 256
+
+static uint64_t ext4_extent_pblock_from_ex(const struct ext4_extent *ex)
+{
+	return ((uint64_t)ex->ee_start_hi << 32) | (uint64_t)ex->ee_start_lo;
+}
+
+static uint64_t ext4_extent_child_pblock(const struct ext4_extent_idx *ix)
+{
+	return ((uint64_t)ix->ei_leaf_hi << 32) | (uint64_t)ix->ei_leaf_lo;
+}
+
+static void ext4_free_extent_tree_node(struct super_block *sb, struct ext4_extent_header *eh)
+{
+	uint32_t block_size;
+	uint32_t i;
+
+	if (!sb || !eh || eh->eh_magic != EXT4_EXT_MAGIC) {
+		return;
+	}
+
+	block_size = ext4_get_block_size();
+	if (eh->eh_depth == 0) {
+		struct ext4_extent *ex = (struct ext4_extent *)(eh + 1);
+		for (i = 0; i < eh->eh_entries; i++) {
+			uint32_t len = ex[i].ee_len;
+			uint64_t pblk = ext4_extent_pblock_from_ex(&ex[i]);
+			uint32_t j;
+			if (len == 0 || pblk == 0) {
+				continue;
+			}
+			for (j = 0; j < len; j++) {
+				(void)ext4_free_block(sb, (uint32_t)(pblk + j));
+			}
+		}
+		return;
+	}
+
+	{
+		struct ext4_extent_idx *idx = (struct ext4_extent_idx *)(eh + 1);
+		for (i = 0; i < eh->eh_entries; i++) {
+			uint64_t child_pblk = ext4_extent_child_pblock(&idx[i]);
+			uint32_t child_block = (uint32_t)child_pblk;
+			char *child_buf;
+			struct ext4_extent_header *child_eh;
+
+			if (child_block == 0) {
+				continue;
+			}
+
+			child_buf = (char *)malloc(block_size);
+			if (!child_buf) {
+				/* 静态池不足时，至少确保把索引块本身回收，避免永久泄漏。 */
+				(void)ext4_free_block(sb, child_block);
+				continue;
+			}
+			if (ext4_read_block(child_block, child_buf) == 0) {
+				child_eh = (struct ext4_extent_header *)child_buf;
+				ext4_free_extent_tree_node(sb, child_eh);
+			}
+			free(child_buf);
+			(void)ext4_free_block(sb, child_block);
+		}
+	}
+}
+
+static void ext4_free_legacy_data_blocks(struct inode *inode, struct ext4_inode_info *ei)
+{
+	struct super_block *sb;
+	uint32_t block_size;
+	uint32_t ptrs_per_block;
+	uint32_t i;
+
+	if (!inode || !ei) {
+		return;
+	}
+	sb = inode->i_sb;
+	if (!sb) {
+		return;
+	}
+	block_size = ext4_get_block_size();
+	ptrs_per_block = block_size / 4;
+
+	/* 直接块 */
+	for (i = 0; i < 12; i++) {
+		if (ei->i_block[i] != 0) {
+			(void)ext4_free_block(sb, ei->i_block[i]);
+			ei->i_block[i] = 0;
+		}
+	}
+
+	/* 单间接块 */
+	if (ei->i_block[12] != 0) {
+		uint32_t ind_blk = ei->i_block[12];
+		uint32_t *ind_buf = (uint32_t *)malloc(block_size);
+		if (ind_buf && ext4_read_block(ind_blk, ind_buf) == 0) {
+			for (i = 0; i < ptrs_per_block; i++) {
+				if (ind_buf[i] != 0) {
+					(void)ext4_free_block(sb, ind_buf[i]);
+				}
+			}
+		}
+		if (ind_buf) {
+			free(ind_buf);
+		}
+		(void)ext4_free_block(sb, ind_blk);
+		ei->i_block[12] = 0;
+	}
+
+	/* 双重间接块 */
+	if (ei->i_block[13] != 0) {
+		uint32_t l1_blk = ei->i_block[13];
+		uint32_t *l1_buf = (uint32_t *)malloc(block_size);
+		if (l1_buf && ext4_read_block(l1_blk, l1_buf) == 0) {
+			for (i = 0; i < ptrs_per_block; i++) {
+				uint32_t l2_blk = l1_buf[i];
+				uint32_t *l2_buf;
+				uint32_t j;
+				if (l2_blk == 0) {
+					continue;
+				}
+				l2_buf = (uint32_t *)malloc(block_size);
+				if (l2_buf && ext4_read_block(l2_blk, l2_buf) == 0) {
+					for (j = 0; j < ptrs_per_block; j++) {
+						if (l2_buf[j] != 0) {
+							(void)ext4_free_block(sb, l2_buf[j]);
+						}
+					}
+				}
+				if (l2_buf) {
+					free(l2_buf);
+				}
+				(void)ext4_free_block(sb, l2_blk);
+			}
+		}
+		if (l1_buf) {
+			free(l1_buf);
+		}
+		(void)ext4_free_block(sb, l1_blk);
+		ei->i_block[13] = 0;
+	}
+
+	/* 当前实现未使用三重间接 i_block[14]，这里防御性释放。 */
+	if (ei->i_block[14] != 0) {
+		(void)ext4_free_block(sb, ei->i_block[14]);
+		ei->i_block[14] = 0;
+	}
+}
+
+static void ext4_free_inode_data_blocks(struct inode *inode)
+{
+	struct ext4_inode_info *ei;
+	struct ext4_extent_header *eh;
+
+	if (!inode || !inode->i_sb) {
+		return;
+	}
+	ei = (struct ext4_inode_info *)inode->i_private;
+	if (!ei) {
+		return;
+	}
+
+	if (S_ISREG(inode->i_mode) && (ei->i_flags & EXT4_INODE_FLAG_EXTENTS)) {
+		eh = (struct ext4_extent_header *)ei->i_block;
+		if (eh->eh_magic == EXT4_EXT_MAGIC) {
+			ext4_free_extent_tree_node(inode->i_sb, eh);
+		}
+		memset(ei->i_block, 0, sizeof(ei->i_block));
+	} else {
+		ext4_free_legacy_data_blocks(inode, ei);
+	}
+
+	inode->i_size = 0;
+	inode->i_blocks = 0;
+}
 
 /**
  * ext4_lookup - 按名称查找目录项
@@ -116,10 +292,21 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	inode->i_mtime = inode->i_atime;
 	inode->i_ctime = inode->i_atime;
 	inode->i_sb = sb;
+	inode->i_op = &ext4_file_inode_operations;
+	inode->i_fop = &ext4_file_operations;
 	ei = (struct ext4_inode_info *)inode->i_private;
 	if (ei) {
+		struct ext4_extent_header *eh;
 		memset(ei->i_block, 0, sizeof(ei->i_block));
-		ei->i_flags = 0;
+		/* 与 Linux ext4 对齐：普通文件默认使用 extents。 */
+		ei->i_flags |= EXT4_INODE_FLAG_EXTENTS;
+		eh = (struct ext4_extent_header *)ei->i_block;
+		eh->eh_magic = (uint16_t)EXT4_EXT_MAGIC;
+		eh->eh_entries = 0;
+		eh->eh_depth = 0;
+		eh->eh_generation = 0;
+		eh->eh_max = (uint16_t)((sizeof(ei->i_block) - sizeof(*eh)) /
+					sizeof(struct ext4_extent));
 	}
 	sb->s_op->write_inode(inode, NULL);
 	if (ext4_add_entry(dir, &dentry->d_name, ino) != 0) {
@@ -152,6 +339,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (ino == 0) {
 		return -1;
 	}
+	/* 新目录默认只占 1 个块，保持与 Linux 常见行为一致（4KB 块时目录大小为 4KB）。 */
 	blocknr = ext4_new_block(sb);
 	if (blocknr == 0) {
 		ext4_free_inode(sb, (uint32_t)ino);
@@ -165,20 +353,22 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	}
 	inode->i_ino = ino;
 	inode->i_mode = S_IFDIR | (mode & 0777);
-	inode->i_size = block_size;
-	inode->i_blocks = block_size / 512;
+	inode->i_size = (uint64_t)block_size;
+	inode->i_blocks = (block_size / 512);
 	inode->i_nlink = 2; /* . 和 .. */
 	inode->i_atime = rtc_get_unix_time();
 	inode->i_mtime = inode->i_atime;
 	inode->i_ctime = inode->i_atime;
 	inode->i_sb = sb;
+	inode->i_op = &ext4_dir_inode_operations;
+	inode->i_fop = &ext4_dir_operations;
 	ei = (struct ext4_inode_info *)inode->i_private;
 	if (ei) {
 		memset(ei->i_block, 0, sizeof(ei->i_block));
 		ei->i_block[0] = blocknr;
-		ei->i_flags = 0;
 	}
-	/* 写入目录块（含 . 和 ..） */
+
+	/* 初始化目录块：仅包含 "."、".."，其余空间作为空闲目录项。 */
 	buf = (char *)malloc(block_size);
 	if (!buf) {
 		sb->s_op->destroy_inode(inode);
@@ -188,31 +378,49 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	}
 	memset(buf, 0, block_size);
 	de = (struct ext4_dir_entry *)buf;
-	rec1 = (8 + 1 + 3) & ~3;
+
+	/* "." 条目 */
+	rec1 = (uint16_t)((8 + 1 + 3) & ~3);
 	de->inode = (uint32_t)ino;
 	de->rec_len = rec1;
 	de->name_len = 1;
 	de->file_type = 2; /* DT_DIR */
 	de->name[0] = '.';
+
+	/* ".." 条目 */
 	de = (struct ext4_dir_entry *)((char *)de + rec1);
-	rec2 = (uint16_t)((block_size - rec1) & ~3);
+	rec2 = (uint16_t)((8 + 2 + 3) & ~3);
 	de->inode = dir->i_ino;
 	de->rec_len = rec2;
 	de->name_len = 2;
 	de->file_type = 2; /* DT_DIR */
 	de->name[0] = '.';
 	de->name[1] = '.';
+
+	/* 剩余空间作为一个空闲目录项，供后续 ext4_add_entry 插入真实目录项。 */
+	{
+		uint32_t off = rec1 + rec2;
+		struct ext4_dir_entry *fake = (struct ext4_dir_entry *)((char *)buf + off);
+		fake->inode = 0;
+		fake->rec_len = (uint16_t)(block_size - off);
+		fake->name_len = 0;
+		fake->file_type = 0;
+	}
+
 	ret = ext4_write_block(blocknr, buf);
-	free(buf);
 	if (ret < 0) {
+		free(buf);
 		sb->s_op->destroy_inode(inode);
 		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
 		return -1;
 	}
+	free(buf);
 	sb->s_op->write_inode(inode, NULL);
 	if (ext4_add_entry(dir, &dentry->d_name, ino) != 0) {
 		sb->s_op->destroy_inode(inode);
+		/* 失败时仅释放新目录自身的块与 inode；
+		 * 父目录中未成功添加目录项，不需要额外回滚。 */
 		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
 		return -1;
@@ -241,8 +449,12 @@ static int ext4_unlink(struct inode *dir, struct dentry *dentry)
 		return -1;
 	}
 	inode->i_nlink--;
-	sb->s_op->write_inode(inode, NULL);
-	/* nlink 为 0 时可释放 inode 与块；简化实现：暂不回收 */
+	if (inode->i_nlink == 0) {
+		ext4_free_inode_data_blocks(inode);
+		(void)ext4_free_inode(sb, (uint32_t)inode->i_ino);
+	} else {
+		sb->s_op->write_inode(inode, NULL);
+	}
 	return 0;
 }
 
@@ -280,7 +492,8 @@ static int ext4_rmdir(struct inode *dir, struct dentry *dentry)
 	}
 	inode->i_nlink -= 2; /* 原为 2（. 和 ..） */
 	dir->i_nlink--;
-	sb->s_op->write_inode(inode, NULL);
+	ext4_free_inode_data_blocks(inode);
+	(void)ext4_free_inode(sb, (uint32_t)inode->i_ino);
 	sb->s_op->write_inode(dir, NULL);
 	return 0;
 }

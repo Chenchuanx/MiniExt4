@@ -46,6 +46,9 @@ set(KERNEL_SOURCES
     fs/ext4/ialloc.c
     fs/ext4/dir.c
     fs/ext4/file.c
+    fs/ext4/extents.c
+    fs/ext4/htree.c
+    fs/bptree.c
     drivers/ata.cpp
     drivers/rtc.cpp
     kernel/interrupts/interrupts.cpp
@@ -56,6 +59,7 @@ set(KERNEL_SOURCES
     drivers/input/mouse.cpp
     drivers/input/handlers.cpp
     lib/printf.cpp
+    lib/time.cpp
     lib/syscall.cpp
     lib/string.cpp
     kernel/shell.cpp

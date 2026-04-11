@@ -54,7 +54,7 @@ int vfs_open(const char *path, int flags, int mode)
             struct dentry *parent;
 
             if (!path || path[0] == '\0') {
-                return -2;
+                return -21;
             }
 
             /* 去掉前导 '/'，得到相对路径部分（逻辑同 vfs_mkdir） */
@@ -65,7 +65,7 @@ int vfs_open(const char *path, int flags, int mode)
                 } while (*rel == '/');
             }
             if (*rel == '\0') {
-                return -2;
+                return -22;
             }
 
             /* 查找最后一个 '/'，将路径拆分为 parent/path 和 name */
@@ -86,7 +86,7 @@ int vfs_open(const char *path, int flags, int mode)
                 /* 有 '/'：前半部分是父路径，最后一个分量是新文件名 */
                 parent_len = (int)(last_sep - rel);
                 if (parent_len <= 0 || parent_len >= (int)sizeof(parent_buf)) {
-                    return -2;
+                    return -23;
                 }
                 for (name_len = 0; name_len < parent_len; name_len++) {
                     parent_buf[name_len] = rel[name_len];
@@ -96,15 +96,15 @@ int vfs_open(const char *path, int flags, int mode)
                 parent = (path[0] == '/') ? vfs_path_lookup(root, parent_buf)
                                           : vfs_path_lookup(cwd, parent_buf);
                 if (!parent || !parent->d_inode) {
-                    return -2;
+                    return -24;
                 }
                 if (!S_ISDIR(parent->d_inode->i_mode)) {
-                    return -2;
+                    return -25;
                 }
 
                 name_start = last_sep + 1;
                 if (*name_start == '\0') {
-                    return -2;
+                    return -26;
                 }
             }
 
@@ -112,7 +112,7 @@ int vfs_open(const char *path, int flags, int mode)
             name_len = 0;
             while (name_start[name_len] != '\0') {
                 if (name_start[name_len] == '/') {
-                    return -2;
+                    return -27;
                 }
                 if (name_len < 255) {
                     name_buf[name_len] = name_start[name_len];
@@ -123,7 +123,7 @@ int vfs_open(const char *path, int flags, int mode)
 
             /* 目录 inode 必须支持 create 操作 */
             if (!parent->d_inode || !parent->d_inode->i_op || !parent->d_inode->i_op->create) {
-                return -2;
+                return -28;
             }
 
             /* 构造 qstr 和 dentry，调用底层文件系统的 create */
@@ -134,11 +134,12 @@ int vfs_open(const char *path, int flags, int mode)
                 qstr_init(&q, name_buf, name_len);
                 dentry = d_alloc(parent, &q);
                 if (!dentry) {
-                    return -2;
+                    return -29;
                 }
 
                 if (parent->d_inode->i_op->create(parent->d_inode, dentry, (umode_t)mode, (flags & O_EXCL) ? 1 : 0) != 0) {
-                    return -2;
+                    dput(dentry);
+                    return -30;
                 }
 
                 target = dentry;

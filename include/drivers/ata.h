@@ -70,6 +70,15 @@ int ata_read_sectors(uint32_t lba, uint8_t count, void *buf);
  */
 int ata_write_sectors(uint32_t lba, uint8_t count, const void *buf);
 
+/**
+ * ata_get_total_sectors - 获取磁盘总扇区数（LBA28）
+ *
+ * 返回值：
+ * - >0: 扇区总数
+ * - 0: 失败或设备不支持
+ */
+uint32_t ata_get_total_sectors(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -370,3 +370,64 @@ int vfs_unlink(const char *path)
 	return parent->d_inode->i_op->unlink(parent->d_inode, target);
 }
 
+/*
+ * vfs_stat - 获取文件属性
+ *
+ * @path:  文件路径
+ * @st:    文件属性结构体
+ *
+ * 返回值：0 表示成功，负值表示错误。
+ */
+int vfs_stat(const char *path, struct kstat *st)
+{
+    struct super_block *sb;
+    struct dentry *root;
+    struct dentry *cwd;
+    struct dentry *target;
+    struct inode *inode;
+    if (!path || !st) {
+        return -1;
+    }
+    sb = vfs_get_root_sb();
+    if (!sb || !sb->s_root || !sb->s_root->d_inode) {
+        return -2;
+    }
+    root = sb->s_root;
+    cwd  = vfs_get_cwd_dentry();
+    if (!cwd) {
+        return -3;
+    }
+    /* 路径解析：绝对 / 相对，规则与 vfs_unlink 一致 */
+    if (path[0] == '/') {
+        target = vfs_lookup_root(sb, path);
+        if (!target) {
+            return -4;
+        }
+    } else {
+        target = vfs_path_lookup(cwd, path);
+        if (!target) {
+            return -5;
+        }
+    }
+    if (!target->d_inode) {
+        return -6;
+    }
+    inode = target->d_inode;
+    /* 目前不走 inode->i_op->getattr，直接从 inode 字段填充 */
+    st->ino      = (u64)inode->i_ino;
+    st->dev      = (dev_t)sb->s_dev;
+    st->mode     = inode->i_mode;
+    st->nlink    = inode->i_nlink;
+    st->uid      = inode->i_uid;
+    st->gid      = inode->i_gid;
+    st->rdev     = inode->i_rdev;
+    st->size     = inode->i_size;
+    st->blocks   = inode->i_blocks;
+    st->mtime_ns = (u64)inode->i_mtime;
+    st->ctime_ns = (u64)inode->i_ctime;
+    st->atime_ns = (u64)inode->i_atime;
+    st->blksize  = (u32)sb->s_blocksize;
+    st->attributes       = 0;
+    st->attributes_mask  = 0;
+    return 0;
+}

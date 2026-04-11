@@ -148,7 +148,7 @@ struct ext4_group_desc {
 	__le16	bg_free_blocks_count_hi; /* 空闲块数（高 16 位） */
 	__le16	bg_free_inodes_count_hi; /* 空闲 Inodes 数（高 16 位） */
 	__le16	bg_used_dirs_count_hi;	/* 已用目录数（高 16 位） */
-	__le32	bg_itable_unused_hi;	/* 未使用 Inode 表项数（高 32 位） */
+	__le16	bg_itable_unused_hi;	/* 未使用 Inode 表项数（高 16 位） */
 	__le32	bg_exclude_bitmap_hi;	/* 排除位图块号（高 32 位） */
 	__le16	bg_block_bitmap_csum_hi; /* 块位图校验和（高 16 位） */
 	__le16	bg_inode_bitmap_csum_hi; /* Inode 位图校验和（高 16 位） */
@@ -183,6 +183,67 @@ struct ext4_inode {
 	__le32	i_reserved2;	/* 保留 */
 } __attribute__((packed));
 
+/* Inode 标志位（与 Linux ext4 兼容的 EXTENTS / DIR_INDEX 标志） */
+#define EXT4_INODE_FLAG_EXTENTS 0x00080000U
+
+/* 目录使用基于哈希的 HTree 索引（与 Linux EXT4_INDEX_FL 一致的位值） */
+#define EXT4_INODE_FLAG_INDEX   0x00001000U
+
+/* 兼容/不兼容特性标志
+ *
+ * - EXT4_FEATURE_COMPAT_DIR_INDEX: 目录使用基于哈希的 HTree 索引
+ * - EXT4_FEATURE_INCOMPAT_EXTENTS: 文件数据使用 extents 映射
+ */
+#define EXT4_FEATURE_COMPAT_DIR_INDEX 0x00000020U
+
+/* 不兼容特性标志（仅使用 EXTENTS，用于让宿主 Linux 识别 extents 模式） */
+#define EXT4_FEATURE_INCOMPAT_EXTENTS 0x00000040U
+
+/* === 目录 HTree on-disk 结构（对齐 Linux fs/ext4/htree.h） === */
+
+/* HTree 根节点头部信息，位于目录第一个块中的 "." 目录项之后 */
+struct ext4_dx_root_info {
+	__le32	reserved_zero;   /* 保留，置为 0 */
+	__u8	hash_version;   /* 哈希版本（与 s_def_hash_version 对应） */
+	__u8	info_length;    /* 本结构体长度（以字节为单位） */
+	__u8	indirect_levels;/* 间接层数：0=单层，>0 有 dx_node */
+	__u8	unused_flags;   /* 当前未使用 */
+} __attribute__((packed));
+
+/* HTree entry header（Linux: dx_countlimit） */
+struct ext4_dx_countlimit {
+	__le16	limit;          /* entries[] 总容量 */
+	__le16	count;          /* entries[] 当前条目数 */
+} __attribute__((packed));
+
+/* HTree 索引条目（root/leaf 索引块通用） */
+struct ext4_dx_entry {
+	__le32	hash;           /* 哈希值（高位/truncated） */
+	__le32	block;          /* 逻辑块号（相对该目录起始数据块） */
+} __attribute__((packed));
+
+/* HTree 索引块头部（dx_root / dx_node 复用）
+ *
+ * 说明：这里不直接嵌入 struct ext4_dir_entry，以避免在本头文件中引入对其完整定义的依赖。
+ * 实际使用时应在目录实现代码中，通过适当的偏移将 on-disk 布局解释为 dirent+root_info+entries。 */
+struct ext4_dx_node {
+	__le32	fake_inum;
+	__le16	fake_rec_len;
+	__u8	fake_name_len;
+	__u8	fake_file_type;
+	struct ext4_dx_root_info info;
+	struct ext4_dx_countlimit countlimit;
+	struct ext4_dx_entry entries[0];
+} __attribute__((packed));
+
+/* HTree hash version（与 Linux ext4 保持一致） */
+#define EXT4_DX_HASH_LEGACY            0
+#define EXT4_DX_HASH_HALF_MD4          1
+#define EXT4_DX_HASH_TEA               2
+#define EXT4_DX_HASH_LEGACY_UNSIGNED   3
+#define EXT4_DX_HASH_HALF_MD4_UNSIGNED 4
+#define EXT4_DX_HASH_TEA_UNSIGNED      5
+
 /* Ext4 目录项（on-disk，与 Linux ext2/ext3/ext4 一致：name_len/file_type 各 1 字节） */
 struct ext4_dir_entry {
 	__le32	inode;		/* Inode 号 */
@@ -203,33 +264,102 @@ struct ext4_sb_info {
 	uint32_t	s_log_block_size;	/* 块大小对数 */
 	uint32_t	s_block_size;		/* 块大小（字节） */
 	uint32_t	s_groups_count;		/* 块组数 */
+	/* 组描述符大小（字节）。典型值：32（老格式）、64（ext4 新格式） */
+	uint16_t	s_desc_size;
 	
 	/* 块组描述符表（简化版，只保存第一个块组） */
 	struct ext4_group_desc *s_group_desc;
 	
 	/* 根 Inode 号（通常是 2） */
 	uint32_t	s_root_ino;
+
+	/* 目录 HTree 哈希参数（从 superblock 读取） */
+	uint32_t	s_hash_seed[4];
+	uint8_t		s_def_hash_version;
+
+	/* 块分配器状态（参考 Linux ext4 的 goal + bitmap cache 思路） */
+	uint32_t	s_alloc_goal_group;      /* next-fit 起始组 */
+	uint32_t	s_alloc_goal_bit;        /* 组内 next-fit 起始 bit */
+	uint32_t	s_alloc_last_group;      /* 最近一次成功分配所在组 */
+	uint32_t	s_alloc_last_bit;        /* 最近一次成功分配所在 bit */
+
+	uint32_t	s_bmap_cache_group;      /* 当前缓存的块位图所属组 */
+	uint8_t		s_bmap_cache_valid;      /* 位图缓存是否有效 */
+	uint8_t		s_bmap_cache_dirty;      /* 位图缓存是否已修改 */
+	char		*s_bmap_cache_buf;       /* 位图缓存数据（大小为 block_size） */
+
+	uint32_t	s_bg_sync_pending;       /* 延迟写回 group desc 计数 */
 };
 
-/* Ext4 Inode 信息（内存结构，挂到 inode->i_private） */
+/* Ext4 Inode 信息（内存结构，挂到 inode->i_private）
+ *
+ * 说明：
+ * - 目录仍然使用传统的直接块数组 i_block[0..11] 存放目录块号；
+ * - 普通文件开启 EXT4_INODE_FLAG_EXTENTS 时：
+ *   - i_block 数组的 60 字节区域按照 Linux ext4 的格式解释为：
+ *     ext4_extent_header + 若干 ext4_extent / ext4_extent_idx（root 节点）
+ *   - 即 root extents 节点直接内嵌在 inode 中，而不是单独的索引块。
+ */
 struct ext4_inode_info {
 	/* 从磁盘 inode 读取的信息 */
 	uint32_t	i_block[15];	/* 块指针数组 */
 	uint32_t	i_flags;	/* Ext4 Inode 标志 */
+
+	/* 目录索引用内存结构（基于 B+Tree），非持久化 */
+	void		*dir_index;	/* 指向内部目录索引根/上下文 */
 };
+
+/* === Extents 机制相关结构（对齐 Linux ext4 on-disk 布局） === */
+
+/* 与 Linux fs/ext4/extents.h 对齐的头部 */
+struct ext4_extent_header {
+	__le16	eh_magic;	/* 魔数：0xF30A */
+	__le16	eh_entries;	/* 当前已使用的条目数 */
+	__le16	eh_max;		/* 最大条目数 */
+	__le16	eh_depth;	/* 深度：0=叶子，>0 为索引节点 */
+	__le32	eh_generation;	/* 代数（当前未使用） */
+} __attribute__((packed));
+
+/* 叶子节点中的 extent 条目 */
+struct ext4_extent {
+	__le32	ee_block;	/* 逻辑起始块号 */
+	__le16	ee_len;		/* 块数 */
+	__le16	ee_start_hi;	/* 物理起始块号的高 16 位 */
+	__le32	ee_start_lo;	/* 物理起始块号的低 32 位 */
+} __attribute__((packed));
+
+/* 索引节点中的索引条目（当前 MiniExt4 仅预留，不必马上实现多级） */
+struct ext4_extent_idx {
+	__le32	ei_block;	/* 子树覆盖的最小逻辑块号 */
+	__le32	ei_leaf_lo;	/* 子节点块号（低 32 位） */
+	__le16	ei_leaf_hi;	/* 子节点块号（高 16 位） */
+	__le16	ei_unused;
+} __attribute__((packed));
+
+/* Extents 头部魔数（与 Linux 保持一致） */
+#define EXT4_EXT_MAGIC 0xF30A
+
+/* 基于 extents 的数据块映射接口 */
+int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
+			   int create, uint32_t *out_block, int *is_new);
 
 /* 函数声明 */
 int ext4_read_block(uint32_t blocknr, void *buf);
 int ext4_write_block(uint32_t blocknr, const void *buf);
+int ext4_write_blocks(uint32_t blocknr, uint32_t blocks, const void *buf);
 void ext4_set_block_size(uint32_t size);
 uint32_t ext4_get_block_size(void);
+uint32_t ext4_get_blocks_count(void);
+uint32_t ext4_get_blocks_per_group(void);
 
 /* Ext4 文件系统初始化（格式化） */
 int ext4_mkfs(uint32_t block_size, uint32_t total_blocks);
 
 /* 块分配和释放 */
 uint32_t ext4_new_block(struct super_block *sb);
+uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *out_len);
 int ext4_free_block(struct super_block *sb, uint32_t blocknr);
+int ext4_balloc_flush(struct super_block *sb);
 
 /* Inode 分配和释放 */
 uint32_t ext4_new_inode(struct super_block *sb);

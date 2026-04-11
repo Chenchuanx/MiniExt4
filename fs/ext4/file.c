@@ -8,12 +8,13 @@
 #include <fs/dentry.h>
 
 #ifndef NULL
-#define NULL ((void *)0)
+#define NULL 0
 #endif
 
 /* 前向声明 */
 extern int ext4_read_block(uint32_t blocknr, void *buf);
 extern int ext4_write_block(uint32_t blocknr, const void *buf);
+extern int ext4_write_blocks(uint32_t blocknr, uint32_t blocks, const void *buf);
 extern uint32_t ext4_get_block_size(void);
 
 /* 简化的内存操作函数 */
@@ -34,6 +35,9 @@ static void *simple_memset(void *s, int c, size_t n)
 }
 #define memcpy simple_memcpy
 #define memset simple_memset
+
+
+
 
 /* 简化的内存分配（使用静态池） */
 #define MAX_MALLOC 4096
@@ -60,16 +64,9 @@ static void simple_free(void *p)
 #define malloc simple_malloc
 #define free simple_free
 
-/* 获取逻辑块号对应的数据块号
- * @inode:  文件 inode
- * @lblock: 逻辑块号（从 0 开始）
- * @create: 为 1 时允许分配新块，为 0 时不分配
- * @out_block: 返回的数据块号（0 表示空洞或失败）
- * @is_new:  返回该数据块是否是新分配的（仅在 create=1 时有意义）
- *
- * 成功返回 0，失败返回 -1。
+/* 获取逻辑块号对应的数据块号 （传统直接/间接块映射）
  */
-static int ext4_get_data_block(struct inode *inode, uint32_t lblock,
+static int ext4_legacy_get_data_block(struct inode *inode, uint32_t lblock,
 			       int create, uint32_t *out_block, int *is_new)
 {
 	struct super_block *sb = inode->i_sb;
@@ -283,6 +280,35 @@ static int ext4_get_data_block(struct inode *inode, uint32_t lblock,
 	}
 }
 
+/* 使用 extents 机制获取数据块号（fs/ext4/extents.c） */
+extern int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
+				  int create, uint32_t *out_block, int *is_new);
+
+/* 统一入口：根据 inode 是否开启 extents 决定具体实现 */
+static int ext4_get_data_block(struct inode *inode, uint32_t lblock,
+			       int create, uint32_t *out_block, int *is_new)
+{
+	struct ext4_inode_info *ei = (struct ext4_inode_info *)inode->i_private;
+
+	/* 仅对普通文件启用 extents 机制 */
+	if (S_ISREG(inode->i_mode)) {
+		/* 如果是写入路径（create=1），则自动打开 extents 标志，确保后续
+		 * 的数据块分配和映射都通过 extents 完成。
+		 */
+		if (create && ei && !(ei->i_flags & EXT4_INODE_FLAG_EXTENTS)) {
+			ei->i_flags |= EXT4_INODE_FLAG_EXTENTS;
+		}
+
+		if (ei && (ei->i_flags & EXT4_INODE_FLAG_EXTENTS)) {
+			/* 启用 extents：优先走 extents 版本 */
+			return ext4_extents_get_block(inode, lblock, create, out_block, is_new);
+		}
+	}
+
+	/* 未启用 extents：使用传统直接/间接块映射 */
+	return ext4_legacy_get_data_block(inode, lblock, create, out_block, is_new);
+}
+
 /* 普通文件操作 */
 
 static int ext4_file_open(struct inode *inode, struct file *file)
@@ -320,7 +346,7 @@ static ssize_t ext4_file_read(struct file *file, char *buf, size_t count, loff_t
 		int ret;
 
 		/* 通过直接块 + 间接块映射获取数据块号（不分配新块） */
-		if (ext4_get_data_block(inode, block_idx, 0, &blocknr, NULL) < 0) {
+		if (ext4_get_data_block(inode, block_idx, 0, &blocknr, 0) < 0) {
 			free(block_buf);
 			return -1;
 		}
@@ -346,6 +372,7 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 	struct super_block *sb = inode->i_sb;
 	struct ext4_inode_info *ei = (struct ext4_inode_info *)inode->i_private;
 	uint32_t block_size = ext4_get_block_size();
+	uint32_t sectors_per_block = (block_size + 511U) / 512U;
 	loff_t end_pos = *pos + (loff_t)count;
 	ssize_t written = 0;
 	char *block_buf;
@@ -369,28 +396,81 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 			return -1;
 		}
 		if (blocknr == 0) break;
-		if (is_new) {
-			/* 新分配的数据块，先清零 */
-			memset(block_buf, 0, block_size);
-		} else {
-			ret = ext4_read_block(blocknr, block_buf);
-			if (ret < 0) { free(block_buf); return -1; }
-		}
 		to_copy = block_size - off_in_block;
 		if (to_copy > count) to_copy = count;
-		memcpy(block_buf + off_in_block, buf, to_copy);
-		ret = ext4_write_block(blocknr, block_buf);
-		if (ret < 0) { free(block_buf); return -1; }
+		/* 整块对齐写：直接从用户缓冲区落盘，避免 memset/memcpy 或读改写 */
+		if (off_in_block == 0 && to_copy == block_size) {
+			uint32_t run_blocks = 1;
+			uint32_t new_run_blocks = is_new ? 1U : 0U;
+			uint32_t max_blocks_by_count = count / block_size;
+			uint32_t next_lblock = block_idx + 1;
+			uint32_t prev_pblock = blocknr;
+
+			/* 连续块批量写：减少 ext4_write_block/ATA 命令次数。 */
+			if (max_blocks_by_count > 1) {
+				uint32_t probe_limit = max_blocks_by_count;
+				if (probe_limit > 64U) probe_limit = 64U;
+				while (run_blocks < probe_limit) {
+					uint32_t pblk2 = 0;
+					int is_new2 = 0;
+					if (ext4_get_data_block(inode, next_lblock, 1, &pblk2, &is_new2) < 0) {
+						break;
+					}
+					if (pblk2 == 0 || pblk2 != prev_pblock + 1) {
+						break;
+					}
+					if (is_new2) {
+						new_run_blocks++;
+					}
+					prev_pblock = pblk2;
+					next_lblock++;
+					run_blocks++;
+				}
+			}
+
+			if (run_blocks > 1) {
+				ret = ext4_write_blocks(blocknr, run_blocks, buf);
+			} else {
+				ret = ext4_write_block(blocknr, buf);
+			}
+			if (ret < 0) { free(block_buf); return -1; }
+			if (new_run_blocks > 0) {
+				inode->i_blocks += (unsigned long)new_run_blocks * (unsigned long)sectors_per_block;
+				inode->i_state |= I_DIRTY;
+			}
+
+			{
+				size_t advanced = (size_t)run_blocks * block_size;
+				written += (ssize_t)advanced;
+				buf += advanced;
+				*pos += (loff_t)advanced;
+				count -= advanced;
+				continue;
+			}
+		} else {
+			if (is_new) {
+				memset(block_buf, 0, block_size);
+			} else {
+				ret = ext4_read_block(blocknr, block_buf);
+				if (ret < 0) { free(block_buf); return -1; }
+			}
+			memcpy(block_buf + off_in_block, buf, to_copy);
+			ret = ext4_write_block(blocknr, block_buf);
+			if (ret < 0) { free(block_buf); return -1; }
+			if (is_new) {
+				inode->i_blocks += (unsigned long)sectors_per_block;
+				inode->i_state |= I_DIRTY;
+			}
+		}
 		written += (ssize_t)to_copy;
 		buf += to_copy;
 		*pos += (loff_t)to_copy;
 		count -= to_copy;
+
 	}
 	if (end_pos > inode->i_size) {
-		uint32_t end32 = (uint32_t)(end_pos & 0xFFFFFFFFUL);
 		inode->i_size = end_pos;
-		inode->i_blocks = (unsigned long)((end32 + 511) / 512);
-		sb->s_op->write_inode(inode, NULL);
+		inode->i_state |= I_DIRTY;
 	}
 	free(block_buf);
 	return written;
@@ -398,8 +478,14 @@ static ssize_t ext4_file_write(struct file *file, const char *buf, size_t count,
 
 static int ext4_file_release(struct inode *inode, struct file *file)
 {
-	(void)inode;
 	(void)file;
+	if (!inode || !inode->i_sb || !inode->i_sb->s_op ||
+	    !inode->i_sb->s_op->write_inode)
+		return 0;
+	if (inode->i_state & I_DIRTY) {
+		if (inode->i_sb->s_op->write_inode(inode, NULL) == 0)
+			inode->i_state &= ~I_DIRTY;
+	}
 	return 0;
 }
 

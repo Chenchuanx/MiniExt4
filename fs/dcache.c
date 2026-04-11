@@ -66,7 +66,7 @@ struct dentry *d_alloc(struct dentry *parent, const struct qstr *name)
 	struct dentry *dentry;
 	
 	if (!name) {
-		return NULL;
+		return (struct dentry *)0;
 	}
 	
 	/* 从池中分配一个空闲 dentry */
@@ -89,7 +89,8 @@ struct dentry *d_alloc(struct dentry *parent, const struct qstr *name)
 				dentry->d_name.name = dentry->d_iname;
 			} else {
 				/* 长名称，需要外部存储（简化版，暂时不支持） */
-				return NULL;
+				dcache_used[i] = false;
+				return (struct dentry *)0;
 			}
 			dentry->d_name.len = name->len;
 			dentry->d_name.hash = name->hash;
@@ -108,7 +109,7 @@ struct dentry *d_alloc(struct dentry *parent, const struct qstr *name)
 		}
 	}
 	
-	return NULL;
+	return (struct dentry *)0;
 }
 
 /**
@@ -124,7 +125,7 @@ struct dentry *d_lookup(struct dentry *parent, const struct qstr *name)
 	struct list_head *p;
 	
 	if (!parent || !name) {
-		return NULL;
+		return (struct dentry *)0;
 	}
 	
 	/* 遍历父目录的子项链表 */
@@ -140,7 +141,7 @@ struct dentry *d_lookup(struct dentry *parent, const struct qstr *name)
 		}
 	}
 	
-	return NULL;
+	return (struct dentry *)0;
 }
 
 /**
@@ -227,6 +228,10 @@ void d_instantiate(struct dentry *dentry, struct inode *inode)
 	dentry->d_inode = inode;
 	if (inode) {
 		inode->i_count++;
+		/* 让后续 d_lookup 能命中：实例化后挂入父目录子链表 */
+		if (dentry->d_parent && list_empty(&dentry->d_child)) {
+			list_add(&dentry->d_child, &dentry->d_parent->d_subdirs);
+		}
 	}
 }
 

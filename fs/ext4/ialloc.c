@@ -173,8 +173,18 @@ static int ext4_update_group_desc_inode(struct super_block *sb, uint32_t group)
 		return -1;
 	}
 
-	/* 用内存中的组描述符覆盖第一个描述符 */
-	memcpy(buf, sbi->s_group_desc, sizeof(struct ext4_group_desc));
+	/* 用内存中的组描述符覆盖第一个描述符（仅写回 s_desc_size 字节） */
+	if (sbi->s_desc_size == 0 || sbi->s_desc_size > block_size) {
+		free(buf);
+		return -1;
+	}
+	{
+		uint32_t copy_sz = sbi->s_desc_size;
+		if (copy_sz > sizeof(struct ext4_group_desc)) {
+			copy_sz = sizeof(struct ext4_group_desc);
+		}
+		memcpy(buf, sbi->s_group_desc, copy_sz);
+	}
 
 	/* 写回磁盘 */
 	ret = ext4_write_block(group_desc_block, buf);
@@ -209,10 +219,7 @@ uint32_t ext4_new_inode(struct super_block *sb)
 
 	inodes_per_group = sbi->s_inodes_per_group;
 
-	/* 检查是否有空闲 inode */
-	if (sbi->s_group_desc->bg_free_inodes_count_lo == 0) {
-		return 0;
-	}
+	/* 不仅依赖计数字段；计数可能不准，仍尝试扫描位图。 */
 
 	/* 分配位图缓冲区 */
 	bitmap_buf = (char *)malloc(block_size);

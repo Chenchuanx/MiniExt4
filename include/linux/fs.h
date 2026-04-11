@@ -29,6 +29,7 @@ struct address_space;
 #include <fs/inode.h>
 #include <fs/dentry.h>
 #include <fs/file.h>
+#include <fs/stat.h>
 
 /* VFS 公共接口（简化版） */
 
@@ -78,6 +79,7 @@ int vfs_getcwd(char *buf, int buf_len);
 int vfs_mkdir(const char *path, umode_t mode);
 int vfs_chdir(const char *path);
 int vfs_unlink(const char *path);
+int vfs_stat(const char *path, struct kstat *stat);
 
 #ifdef __cplusplus
 }
