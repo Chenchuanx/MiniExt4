@@ -74,12 +74,12 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
         printf("Ext4 文件系统注册失败\n");
     }
 
-    // 尝试挂载 Ext4（简化版，直接挂载）
+    // 挂载 Ext4
     printf("正在挂载 Ext4 文件系统...\n");
     struct dentry *root = ext4_fs_type.mount(&ext4_fs_type, 0, nullptr, nullptr);
     if (root) {
         printf("Ext4 文件系统挂载成功\n");
-        printf("根索引节点已挂载\n");
+        printf("根索引节点已就绪\n");
     } else {
         printf("Ext4 文件系统挂载失败\n");
     }

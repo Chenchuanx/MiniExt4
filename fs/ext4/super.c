@@ -567,7 +567,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     
     /* 检查魔数，如果不存在则初始化文件系统 */
     if (esb->s_magic != EXT4_SUPER_MAGIC) {
-        printf("磁盘为空，正在初始化 Ext4 文件系统...\n");
+        printf("未检测到有效 Ext4 超级块，正在初始化磁盘上的 Ext4 结构...\n");
         /* 磁盘是空的，按当前硬盘容量初始化：
          * total_blocks = total_sectors / (block_size / 512)
          * 若 IDENTIFY 获取失败，退回到最小默认值。 */
@@ -588,16 +588,16 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         }
         ret = ext4_mkfs(block_size, total_blocks);
         if (ret < 0) {
-            printf("ext4_mkfs 失败\n");
+            printf("ext4_mkfs：初始化失败\n");
             free(buf);
             return -1;
         }
-        printf("Ext4 文件系统已初始化\n");
+        printf("Ext4 磁盘结构初始化完成\n");
         
         /* 重新读取 superblock */
         ret = ext4_read_block(0, buf);
         if (ret < 0) {
-            printf("ext4: 重新读取超级块失败\n");
+            printf("ext4: 初始化后重新读取超级块失败\n");
             free(buf);
             return -1;
         }
