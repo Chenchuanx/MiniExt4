@@ -5,10 +5,23 @@
  */
 
 #include <linux/fs.h>
+#include <linux/errno.h>
 
 #ifndef NULL
 #define NULL ((void *)0)
 #endif
+
+/* 底层仍常用 -1 表示失败时，统一为 -EIO，其余负值视为已 errno 化 */
+static int coerce_fs_errno(int ret)
+{
+	if (ret >= 0) {
+		return ret;
+	}
+	if (ret == -1) {
+		return -EIO;
+	}
+	return ret;
+}
 
 /* 当前工作目录（简化：全局共享，尚未区分进程） */
 static struct dentry *vfs_cwd = (struct dentry *)0;
@@ -46,17 +59,17 @@ int vfs_getcwd(char *buf, int buf_len)
 	int pos;
 
 	if (!buf || buf_len < 2) {
-		return -1;
+		return -EINVAL;
 	}
 
 	sb = vfs_get_root_sb();
 	if (!sb || !sb->s_root) {
-		return -2;
+		return -ENODEV;
 	}
 	root = sb->s_root;
 	cwd  = vfs_get_cwd_dentry();
 	if (!cwd) {
-		return -3;
+		return -EINVAL;
 	}
 
 	/* 根目录：直接返回 "/" */
@@ -84,7 +97,7 @@ int vfs_getcwd(char *buf, int buf_len)
 
 		/* 预留 '/' 和名称 */
 		if (pos - (name_len + 1) <= 0) {
-			return -4; /* 缓冲区不足 */
+			return -ERANGE;
 		}
 
 		/* 先写入名称 */
@@ -102,7 +115,7 @@ int vfs_getcwd(char *buf, int buf_len)
 
 	/* 如果退回到了根目录，则当前构造的就是绝对路径 */
 	if (pos <= 0) {
-		return -5;
+		return -ERANGE;
 	}
 
 	/* 将结果移动到缓冲区开头 */
@@ -145,17 +158,17 @@ int vfs_mkdir(const char *path, umode_t mode)
 	int parent_len = 0;
 
 	if (!path || path[0] == '\0') {
-		return -1;
+		return -EINVAL;
 	}
 
 	sb = vfs_get_root_sb();
 	if (!sb || !sb->s_root || !sb->s_root->d_inode) {
-		return -2;
+		return -ENODEV;
 	}
 	root = sb->s_root;
 	cwd  = vfs_get_cwd_dentry();
 	if (!cwd) {
-		return -3;
+		return -EINVAL;
 	}
 
 	/* 去掉前导 '/'，得到相对路径部分 */
@@ -166,7 +179,7 @@ int vfs_mkdir(const char *path, umode_t mode)
 		} while (*rel == '/');
 	}
 	if (*rel == '\0') {
-		return -4;
+		return -EINVAL;
 	}
 
 	/* 查找最后一个 '/'，将路径拆分为 parent/path 和 name */
@@ -187,7 +200,7 @@ int vfs_mkdir(const char *path, umode_t mode)
 		/* 有 '/'：前半部分是父路径，最后一个分量是新目录名 */
 		parent_len = (int)(last_sep - rel);
 		if (parent_len <= 0 || parent_len >= (int)sizeof(parent_buf)) {
-			return -5;
+			return -EINVAL;
 		}
 		for (name_len = 0; name_len < parent_len; name_len++) {
 			parent_buf[name_len] = rel[name_len];
@@ -197,15 +210,15 @@ int vfs_mkdir(const char *path, umode_t mode)
 		parent = (path[0] == '/') ? vfs_path_lookup(root, parent_buf)
 					  : vfs_path_lookup(cwd, parent_buf);
 		if (!parent || !parent->d_inode) {
-			return -6;
+			return -ENOENT;
 		}
 		if (!S_ISDIR(parent->d_inode->i_mode)) {
-			return -7;
+			return -ENOTDIR;
 		}
 
 		name_start = last_sep + 1;
 		if (*name_start == '\0') {
-			return -8;
+			return -EINVAL;
 		}
 	}
 
@@ -214,7 +227,7 @@ int vfs_mkdir(const char *path, umode_t mode)
 	while (name_start[name_len] != '\0') {
 		if (name_start[name_len] == '/') {
 			/* 不允许名称中再出现 '/' */
-			return -9;
+			return -EINVAL;
 		}
 		if (name_len < 255) {
 			name_buf[name_len] = name_start[name_len];
@@ -225,7 +238,7 @@ int vfs_mkdir(const char *path, umode_t mode)
 
 	/* 目录 inode 必须支持 mkdir 操作 */
 	if (!parent->d_inode || !parent->d_inode->i_op || !parent->d_inode->i_op->mkdir) {
-		return -10;
+		return -EINVAL;
 	}
 
 	/* 构造 qstr 和 dentry，调用底层文件系统的 mkdir */
@@ -236,11 +249,17 @@ int vfs_mkdir(const char *path, umode_t mode)
 		qstr_init(&q, name_buf, name_len);
 		dentry = d_alloc(parent, &q);
 		if (!dentry) {
-			return -11;
+			return -ENOMEM;
 		}
 
-		if (parent->d_inode->i_op->mkdir(parent->d_inode, dentry, mode) != 0) {
-			return -12;
+		{
+			int mr = parent->d_inode->i_op->mkdir(parent->d_inode, dentry, mode);
+			if (mr != 0) {
+				if (mr < 0) {
+					return coerce_fs_errno(mr);
+				}
+				return -EIO;
+			}
 		}
 	}
 
@@ -264,17 +283,17 @@ int vfs_chdir(const char *path)
 	struct dentry *target;
 
 	if (!path || path[0] == '\0') {
-		return -1;
+		return -EINVAL;
 	}
 
 	sb = vfs_get_root_sb();
 	if (!sb || !sb->s_root) {
-		return -2;
+		return -ENODEV;
 	}
 	root = sb->s_root;
 	cwd  = vfs_get_cwd_dentry();
 	if (!cwd) {
-		return -3;
+		return -EINVAL;
 	}
 
 	/* 解析路径 */
@@ -285,23 +304,23 @@ int vfs_chdir(const char *path)
 		} else {
 			target = vfs_lookup_root(sb, path);
 			if (!target) {
-				return -4;
+				return -ENOENT;
 			}
 		}
 	} else {
 		target = vfs_path_lookup(cwd, path);
 		if (!target) {
-			return -5;
+			return -ENOENT;
 		}
 	}
 
 	if (!target->d_inode) {
-		return -6;
+		return -ENOENT;
 	}
 
 	/* 必须是目录 */
 	if (!S_ISDIR(target->d_inode->i_mode)) {
-		return -7;
+		return -ENOTDIR;
 	}
 
 	vfs_cwd = target;
@@ -324,17 +343,17 @@ int vfs_unlink(const char *path)
 	struct dentry *parent;
 
 	if (!path || path[0] == '\0') {
-		return -1;
+		return -EINVAL;
 	}
 
 	sb = vfs_get_root_sb();
 	if (!sb || !sb->s_root || !sb->s_root->d_inode) {
-		return -2;
+		return -ENODEV;
 	}
 	root = sb->s_root;
 	cwd  = vfs_get_cwd_dentry();
 	if (!cwd) {
-		return -3;
+		return -EINVAL;
 	}
 
 	/* 解析路径，得到目标 dentry */
@@ -342,32 +361,41 @@ int vfs_unlink(const char *path)
 		/* 绝对路径：从根目录开始解析 */
 		target = vfs_lookup_root(sb, path);
 		if (!target) {
-			return -4;
+			return -ENOENT;
 		}
 	} else {
 		/* 相对路径：从当前工作目录开始解析 */
 		target = vfs_path_lookup(cwd, path);
 		if (!target) {
-			return -5;
+			return -ENOENT;
 		}
 	}
 
 	if (!target->d_inode) {
-		return -6;
+		return -ENOENT;
 	}
 
 	/* 目前仅支持删除普通文件，不允许删除目录 */
 	if (S_ISDIR(target->d_inode->i_mode)) {
-		return -7;
+		return -EISDIR;
 	}
 
 	parent = target->d_parent;
 	if (!parent || !parent->d_inode || !parent->d_inode->i_op ||
 	    !parent->d_inode->i_op->unlink) {
-		return -8;
+		return -EINVAL;
 	}
 
-	return parent->d_inode->i_op->unlink(parent->d_inode, target);
+	{
+		int ur = parent->d_inode->i_op->unlink(parent->d_inode, target);
+		if (ur != 0) {
+			if (ur < 0) {
+				return coerce_fs_errno(ur);
+			}
+			return -EIO;
+		}
+	}
+	return 0;
 }
 
 /*
@@ -386,31 +414,31 @@ int vfs_stat(const char *path, struct kstat *st)
     struct dentry *target;
     struct inode *inode;
     if (!path || !st) {
-        return -1;
+        return -EINVAL;
     }
     sb = vfs_get_root_sb();
     if (!sb || !sb->s_root || !sb->s_root->d_inode) {
-        return -2;
+        return -ENODEV;
     }
     root = sb->s_root;
     cwd  = vfs_get_cwd_dentry();
     if (!cwd) {
-        return -3;
+        return -EINVAL;
     }
     /* 路径解析：绝对 / 相对，规则与 vfs_unlink 一致 */
     if (path[0] == '/') {
         target = vfs_lookup_root(sb, path);
         if (!target) {
-            return -4;
+            return -ENOENT;
         }
     } else {
         target = vfs_path_lookup(cwd, path);
         if (!target) {
-            return -5;
+            return -ENOENT;
         }
     }
     if (!target->d_inode) {
-        return -6;
+        return -ENOENT;
     }
     inode = target->d_inode;
     /* 目前不走 inode->i_op->getattr，直接从 inode 字段填充 */

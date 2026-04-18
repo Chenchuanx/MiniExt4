@@ -31,7 +31,6 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
     fb_console_init(multiboot_structure, static_cast<uint32_t>(magic_number));
 
     printf("Hello Ext4 World!\n");
-    printf("\xe4\xb8\xad\xe6\x96\x87\xe6\xb5\x8b\xe8\xaf\x95 \xe5\x90\xaf\xe7\x94\xa8\xe5\xb8\x9f\xe7\xbc\x93\xe5\x86\xb2\n");
 
     // 初始化全局描述符表
     GlobalDescriptorTable gdt;
@@ -65,29 +64,24 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
     interrupts.Activate();
 
     // 初始化 ATA 驱动
-    printf("Initializing ATA driver...\n");
-    if (ata_init() == 0) {
-        printf("ATA driver initialized successfully\n");
-    } else {
-        printf("ATA driver initialization failed\n");
-    }
+    ata_init();
 
     // 注册 Ext4 文件系统
-    printf("Registering Ext4 filesystem...\n");
+    printf("正在注册 Ext4 文件系统...\n");
     if (register_filesystem(&ext4_fs_type) == 0) {
-        printf("Ext4 filesystem registered successfully\n");
+        printf("Ext4 文件系统注册成功\n");
     } else {
-        printf("Ext4 filesystem registration failed\n");
+        printf("Ext4 文件系统注册失败\n");
     }
 
     // 尝试挂载 Ext4（简化版，直接挂载）
-    printf("Mounting Ext4 filesystem...\n");
+    printf("正在挂载 Ext4 文件系统...\n");
     struct dentry *root = ext4_fs_type.mount(&ext4_fs_type, 0, nullptr, nullptr);
     if (root) {
-        printf("Ext4 filesystem mounted successfully\n");
-        printf("Root inode mounted\n");
+        printf("Ext4 文件系统挂载成功\n");
+        printf("根索引节点已挂载\n");
     } else {
-        printf("Ext4 filesystem mount failed\n");
+        printf("Ext4 文件系统挂载失败\n");
     }
 
     // 显示Shell提示符
