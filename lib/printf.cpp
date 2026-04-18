@@ -1,3 +1,4 @@
+#include <drivers/video/fb_console.h>
 #include <lib/printf.h>
 #include <lib/port.h>
 
@@ -5,6 +6,11 @@ extern "C" {
 
 void printf(const int8_t * str)
 {
+    if (fb_console_active()) {
+        fb_console_puts(str);
+        return;
+    }
+
     static int16_t * VideoMemory = (int16_t*) 0xb8000;
     static int8_t x = 0, y = 14;  // 从第15行开始（索引14）
 
@@ -78,7 +84,7 @@ void printfHex(const uint8_t num)
     msg[0] = hex[(c >> 4) & 0xF];
     msg[1] = hex[c & 0xF];
     msg[2] = '\0';
-    printf(msg);
+    printf(reinterpret_cast<const int8_t *>(msg));
 }
 
 } /* extern "C" */

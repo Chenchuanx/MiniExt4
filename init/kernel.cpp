@@ -5,6 +5,7 @@
 #include <drivers/driver.h>
 #include <drivers/mouse.h>
 #include <kernel/syscalls.h>
+#include <drivers/video/fb_console.h>
 #include <lib/printf.h>
 #include <kernel/shell.h>
 #include <drivers/handlers.h>
@@ -27,12 +28,10 @@ extern "C" void callConstructors()
 // 内核主函数
 extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
 {
-    // 避免未使用参数的警告（暂未使用 multiboot 结构和 magic number）
-    (void)multiboot_structure;
-    (void)magic_number;
-    
-    // 显示启动信息
+    fb_console_init(multiboot_structure, static_cast<uint32_t>(magic_number));
+
     printf("Hello Ext4 World!\n");
+    printf("\xe4\xb8\xad\xe6\x96\x87\xe6\xb5\x8b\xe8\xaf\x95 \xe5\x90\xaf\xe7\x94\xa8\xe5\xb8\x9f\xe7\xbc\x93\xe5\x86\xb2\n");
 
     // 初始化全局描述符表
     GlobalDescriptorTable gdt;
@@ -86,7 +85,6 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
     struct dentry *root = ext4_fs_type.mount(&ext4_fs_type, 0, nullptr, nullptr);
     if (root) {
         printf("Ext4 filesystem mounted successfully\n");
-        // 简化版：printf 不支持格式化，只显示基本信息
         printf("Root inode mounted\n");
     } else {
         printf("Ext4 filesystem mount failed\n");
