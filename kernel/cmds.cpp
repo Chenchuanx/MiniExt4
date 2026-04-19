@@ -645,17 +645,66 @@ static void cmd_cd(const int8_t *arg) {
 	}
 }
 
+static void cmd_help(const int8_t *arg);
+
 const struct cmd_entry cmd_table[] = {
-	{"time", cmd_time},
-	{"pwd", cmd_pwd},
-	{"ls", cmd_ls},
-	{"mkdir", cmd_mkdir},
-	{"cd", cmd_cd},
-	{"touch", cmd_touch},
-	{"echo", cmd_echo},
-	{"cat", cmd_cat},
-	{"rm", cmd_rm},
-	{"test_fill", cmd_test_fill},
-	{0, 0},
+	{"help", cmd_help, "列出所有命令或查看命令帮助"},
+	{"time", cmd_time, "显示当前 RTC 时间"},
+	{"pwd", cmd_pwd, "显示当前工作目录"},
+	{"ls", cmd_ls, "列出目录内容 [-l]详细 [-h]易读大小 [-i]显示inode"},
+	{"mkdir", cmd_mkdir, "创建目录"},
+	{"cd", cmd_cd, "切换工作目录"},
+	{"touch", cmd_touch, "创建空文件（不存在时）"},
+	{"echo", cmd_echo, "输出文本；支持 > 重定向到文件"},
+	{"cat", cmd_cat, "显示文件内容"},
+	{"rm", cmd_rm, "删除文件"},
+	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},
+	{0, 0, 0},
 };
 
+static void cmd_help(const int8_t *arg)
+{
+	const char *a = arg ? (const char *)arg : 0;
+	if (a) {
+		while (*a == ' ' || *a == '\t') {
+			a++;
+		}
+	}
+
+	if (!a || *a == '\0') {
+		sysPrintf((int8_t *)"可用命令：\n");
+		for (int i = 0; cmd_table[i].name != 0; i++) {
+			sysPrintf((int8_t *)"  ");
+			sysPrintf((int8_t *)cmd_table[i].name);
+			if (cmd_table[i].help) {
+				sysPrintf((int8_t *)"\t- ");
+				sysPrintf((int8_t *)cmd_table[i].help);
+			}
+			sysPrintf((int8_t *)"\n");
+		}
+		return;
+	}
+
+	for (int i = 0; cmd_table[i].name != 0; i++) {
+		if (strcmp(a, cmd_table[i].name) == 0) {
+			sysPrintf((int8_t *)cmd_table[i].name);
+			sysPrintf((int8_t *)"\n");
+			if (cmd_table[i].help) {
+				sysPrintf((int8_t *)cmd_table[i].help);
+				sysPrintf((int8_t *)"\n");
+			}
+			if (strcmp(a, "ls") == 0) {
+				sysPrintf((int8_t *)"  选项：-l 长列表；-h 人类可读大小（配合 -l）；-i 显示 inode\n");
+			} else if (strcmp(a, "echo") == 0) {
+				sysPrintf((int8_t *)"  示例：echo hello > a.txt\n");
+			} else if (strcmp(a, "test_fill") == 0) {
+				sysPrintf((int8_t *)"  示例：test_fill /path/file 1048576\n");
+			}
+			return;
+		}
+	}
+
+	sysPrintf((int8_t *)"help: 没有名为 \"");
+	sysPrintf((int8_t *)a);
+	sysPrintf((int8_t *)"\" 的命令\n");
+}
