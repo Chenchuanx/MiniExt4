@@ -1,6 +1,12 @@
 /*
  * drivers/video/fb_console.cpp — 帧缓冲 UTF-8 控制台：
- * Multiboot 1 帧信息 + Unifont BMP（16×16；行/像素取法见 drivers/video/cjk_glyphs.cpp）。
+ *
+ * 字形来源（cjk_glyph_bitmap，见 cjk_glyphs.cpp）：从嵌入 Unifont BMP 采样的点阵
+ *   恒为 16×16 像素（32 字节，16 行×2 字节/行），与 BMP 字格一致；此处不负责改分辨率。
+ *
+ * 终端显示（本文件写入帧缓冲）：
+ *   - 基本拉丁 U+0020–U+007E：等宽格 8×16 px，步进 8；由 16 列源字模取下标 1～8 共 8 列绘制。
+ *   - 其它码点（如 CJK）：整格 16×16，步进 16。
  */
 #include <drivers/video/cjk_glyphs.h>
 #include <drivers/video/fb_console.h>
@@ -9,19 +15,31 @@
 static constexpr uint32_t kMultibootMagic = 0x2BADB002u;
 static constexpr uint32_t kMbFlagFramebuffer = 0x1000u;
 
-static uint8_t *g_fb = nullptr;
-static uint32_t g_w = 0, g_h = 0, g_pitch = 0;
-static bool g_active = false;
+static uint8_t *g_fb{};
+static uint32_t g_w{}, g_h{}, g_pitch{};
+static bool g_active{};
 
-static int32_t g_pen_x = 0, g_pen_y = 0;
-static int32_t g_margin = 8;
-static int32_t g_last_adv = 8;
-/* 当前行 mono 已画到的最右像素 x（含）；紧排英文后笔位偏左，整格符号/CJK 会向左盖住英文 */
-static int32_t g_mono_right_x = -1;
-/* 行高略大于 16px 字模，换行时留竖向间隙；滚动步进与之一致 */
-static constexpr int32_t kCellH = 18;
-static uint32_t g_fg = 0;
-static uint32_t g_bg = 0;
+/* 行高 */
+static constexpr int32_t kCellH = 16;
+/* Unifont 源格宽度 */
+static constexpr int32_t kGlyphBmpPx = 16;
+/* ASCII 屏宽 */
+static constexpr int32_t kAsciiCellW = 8;
+/* ASCII 源格起始列 */
+static constexpr int32_t kAsciiGlyphSrcCol0 = 1;
+/* 边距 */
+static constexpr int32_t kMargin = 8;
+
+static struct {
+	int32_t x, y;
+} g_pen{kMargin, kMargin};
+static int32_t g_last_adv{kAsciiCellW};
+/* 当前行已绘制到的最右像素 x（含）；整格字符与 ASCII 重叠时需后移笔位 */
+static int32_t g_mono_right_x{kMargin - 1};
+/* 前景色、背景色 */
+static uint32_t g_fg{}, g_bg{};
+/* 上一帧光标宽度（与 ASCII 同格）；位置即 g_pen，0 表示无上帧光标 */
+static int32_t g_cur_w{};
 
 static uint32_t pack_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
@@ -45,6 +63,35 @@ static void fill_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t c)
             put_px(x + xx, y + yy, c);
 }
 
+static void ensure_room_for_bottom(int32_t ext);
+static int32_t content_right(void);
+static void newline(void);
+
+/* 擦除光标 */
+static void cursor_erase()
+{
+    if (g_cur_w <= 0)
+        return;
+    fill_rect(g_pen.x, g_pen.y, g_cur_w, kCellH, g_bg);
+    g_cur_w = 0;
+}
+
+/* 绘制光标 */
+static void cursor_paint()
+{
+    ensure_room_for_bottom(kCellH);
+    int32_t room = content_right() - g_pen.x;
+    if (room < kAsciiCellW)
+        newline();
+    room = content_right() - g_pen.x;
+    int32_t w = kAsciiCellW;
+    if (room < w)
+        w = room > 0 ? room : 1;
+    g_cur_w = w;
+    fill_rect(g_pen.x, g_pen.y, g_cur_w, kCellH, g_fg);
+}
+
+/* 滚动帧缓冲 */
 static void scroll_up(int32_t dy)
 {
     if (dy <= 0 || static_cast<uint32_t>(dy) >= g_h)
@@ -63,50 +110,53 @@ static void scroll_up(int32_t dy)
     }
 }
 
+/* 内容最右像素 x（含） */
 static int32_t content_right()
 {
-    return static_cast<int32_t>(g_w) - g_margin;
+    return static_cast<int32_t>(g_w) - kMargin;
 }
 
+/* 内容最下像素 y（含） */
 static int32_t content_bottom()
 {
-    return static_cast<int32_t>(g_h) - g_margin;
+    return static_cast<int32_t>(g_h) - kMargin;
 }
 
+/* 确保笔位下方有足够空间 */
 static void ensure_room_for_bottom(int32_t ext)
 {
-    while (g_pen_y + ext > content_bottom())
-        scroll_up(kCellH), g_pen_y -= kCellH;
-    if (g_pen_y < g_margin)
-        g_pen_y = g_margin;
+    while (g_pen.y + ext > content_bottom())
+        scroll_up(kCellH), g_pen.y -= kCellH;
+    if (g_pen.y < kMargin)
+        g_pen.y = kMargin;
 }
 
 static void newline()
 {
-    g_pen_x = g_margin;
-    g_pen_y += kCellH;
-    g_mono_right_x = g_margin - 1;
+    g_pen.x = kMargin;
+    g_pen.y += kCellH;
+    g_mono_right_x = kMargin - 1;
     ensure_room_for_bottom(kCellH);
 }
 
 static void tabto()
 {
-    const int32_t tabw = 8 * 16;
-    int32_t rel = g_pen_x - g_margin;
+    const int32_t tabw = 8 * kAsciiCellW;
+    int32_t rel = g_pen.x - kMargin;
     if (rel < 0)
         rel = 0;
-    int32_t nx = g_margin + ((rel + tabw) / tabw) * tabw;
-    g_pen_x = nx;
-    if (g_pen_x + 16 > content_right())
+    int32_t nx = kMargin + ((rel + tabw) / tabw) * tabw;
+    g_pen.x = nx;
+    if (g_pen.x + kGlyphBmpPx > content_right())
         newline();
 }
 
 static void backsp()
 {
-    if (g_pen_x > g_margin) {
-        g_pen_x -= g_last_adv;
-        fill_rect(g_pen_x, g_pen_y, g_last_adv, kCellH, g_bg);
-        g_mono_right_x = g_pen_x - 1;
+    if (g_pen.x > kMargin) {
+        g_pen.x -= g_last_adv;
+        fill_rect(g_pen.x, g_pen.y, g_last_adv, kCellH, g_bg);
+        g_mono_right_x = g_pen.x - 1;
     }
 }
 
@@ -147,62 +197,32 @@ static void blit_mono(int32_t x0, int32_t y0, const uint8_t *bits, int32_t gw, i
     }
 }
 
-/* 与 blit_mono 一致：位为 0 表示反色后的黑墨 */
-static bool mono_ink_at(const uint8_t *bits, int32_t stride, int32_t gw, int32_t gh, int32_t col, int32_t row)
+/* 自字模第 col0 列起连续绘制 ncols 列（ASCII 时 col0 为 kAsciiGlyphSrcCol0） */
+static void blit_mono_cols(int32_t x0, int32_t y0, const uint8_t *bits, int32_t gw, int32_t gh, int32_t stride,
+                           int32_t col0, int32_t ncols)
 {
-    if (col < 0 || col >= gw || row < 0 || row >= gh)
-        return false;
-    uint8_t b = bits[static_cast<uint32_t>(row) * static_cast<uint32_t>(stride) + col / 8];
-    int32_t bit = 7 - (col % 8);
-    return ((b >> bit) & 1) == 0;
-}
-
-/* 基本拉丁 0x20–0x7E：按墨迹左右边界紧排 */
-static constexpr int32_t kLatinTightRightPad = 1;
-/* 略小于整格 (gw-lcol)，略增 slack 则字距更近；叠字时再减小 slack 或增大 pad */
-static constexpr int32_t kLatinTileClearSlack = 5;
-/* 空格 U+0020：全图格内常有格线，勿按墨迹裁切；步进约为半宽 */
-static constexpr int32_t kLatinSpaceAdvancePx = 10;
-
-static bool latin_use_tight_spacing(uint32_t cp)
-{
-    return cp >= 0x20u && cp <= 0x7eu;
-}
-
-/* 返回步进宽度；*lcol_out / *rcol_out 为字模内墨迹最左、最右列（rcol=-1 表示空格，由调用方单独处理） */
-static int32_t latin_tight_advance(uint32_t cp, const uint8_t *bits, int32_t stride, int32_t gw, int32_t gh,
-                                   int32_t *lcol_out, int32_t *rcol_out)
-{
-    *lcol_out = 0;
-    *rcol_out = -1;
-    if (cp == 0x20u) {
-        /* 必须在墨迹扫描之前返回：否则格线会被当成墨，lcol/adv 错乱 */
-        return kLatinSpaceAdvancePx;
-    }
-    int32_t lcol = gw;
-    int32_t rcol = -1;
-    for (int32_t col = 0; col < gw; ++col) {
-        for (int32_t row = 0; row < gh; ++row) {
-            if (mono_ink_at(bits, stride, gw, gh, col, row)) {
-                if (col < lcol)
-                    lcol = col;
-                if (col > rcol)
-                    rcol = col;
-            }
+    if (col0 < 0)
+        col0 = 0;
+    if (col0 > gw)
+        col0 = gw;
+    if (col0 + ncols > gw)
+        ncols = gw - col0;
+    if (ncols <= 0)
+        return;
+    for (int32_t row = 0; row < gh; ++row) {
+        for (int32_t j = 0; j < ncols; ++j) {
+            int32_t col = col0 + j;
+            uint8_t b = bits[static_cast<uint32_t>(row) * static_cast<uint32_t>(stride) + col / 8];
+            int32_t bit = 7 - (col % 8);
+            bool on = (b >> bit) & 1;
+            put_px(x0 + j, y0 + row, on ? g_bg : g_fg);
         }
     }
-    if (rcol < lcol) {
-        *rcol_out = gw - 1;
-        return gw;
-    }
-    *lcol_out = lcol;
-    *rcol_out = rcol;
-    const int32_t ink_w = rcol - lcol + 1;
-    const int32_t from_ink = ink_w + kLatinTightRightPad;
-    const int32_t from_cell = gw - lcol - kLatinTileClearSlack;
-    /* max(墨迹+边, 近整格)：比纯 gw-lcol 略窄，比仅 ink+1 不易叠 */
-    int32_t adv = from_ink > from_cell ? from_ink : from_cell;
-    return adv;
+}
+
+static bool is_basic_latin_cell(uint32_t cp)
+{
+    return cp >= 0x20u && cp <= 0x7eu;
 }
 
 static bool glyph_lookup(uint32_t cp, const uint8_t **bits, int32_t *gw, int32_t *gh, int32_t *stride)
@@ -211,8 +231,8 @@ static bool glyph_lookup(uint32_t cp, const uint8_t **bits, int32_t *gw, int32_t
     if (!cj)
         return false;
     *bits = cj;
-    *gw = 16;
-    *gh = 16;
+    *gw = kGlyphBmpPx;
+    *gh = kGlyphBmpPx;
     *stride = 2;
     return true;
 }
@@ -227,46 +247,42 @@ static void draw_codepoint(uint32_t cp)
         glyph_lookup(lookup_cp, &bits, &gw, &gh, &st);
     }
 
-    int32_t lcol = 0;
-    int32_t ink_rcol = gw - 1;
-    int32_t adv = gw;
-    if (latin_use_tight_spacing(lookup_cp))
-        adv = latin_tight_advance(lookup_cp, bits, st, gw, gh, &lcol, &ink_rcol);
+    const bool ascii = is_basic_latin_cell(lookup_cp);
+    const int32_t adv = ascii ? kAsciiCellW : gw;
+    const int32_t clip_w = ascii ? kAsciiCellW : gw;
+    const int32_t lcol = 0;
 
-    if (g_pen_x + adv > content_right())
+    if (g_pen.x + adv > content_right())
         newline();
-    /* 按本字实际高度留底边，避免笔画超出屏幕下缘被 put_px 裁掉 */
     ensure_room_for_bottom(gh);
 
-    int32_t y0 = g_pen_y;
+    int32_t y0 = g_pen.y;
     if (gh < kCellH)
         y0 += (kCellH - gh) / 2;
 
-    int32_t draw_x = g_pen_x - lcol;
+    int32_t draw_x = g_pen.x - lcol;
     if (draw_x <= g_mono_right_x)
-        g_pen_x = g_mono_right_x + 1 + lcol;
-    draw_x = g_pen_x - lcol;
-    /* 避开英文后笔位仍偏左，整格符号会向左盖住墨迹 */
-    if (draw_x + gw > content_right()) {
+        g_pen.x = g_mono_right_x + 1 + lcol;
+    draw_x = g_pen.x - lcol;
+    if (draw_x + clip_w > content_right()) {
         newline();
-        draw_x = g_pen_x - lcol;
+        draw_x = g_pen.x - lcol;
         if (draw_x <= g_mono_right_x)
-            g_pen_x = g_mono_right_x + 1 + lcol;
-        draw_x = g_pen_x - lcol;
+            g_pen.x = g_mono_right_x + 1 + lcol;
+        draw_x = g_pen.x - lcol;
     }
 
-    if (lookup_cp == 0x20u) {
-        fill_rect(g_pen_x, g_pen_y, adv, kCellH, g_bg);
-        g_mono_right_x = g_pen_x + adv - 1;
+    if (ascii) {
+        if (lookup_cp == 0x20u)
+            fill_rect(draw_x, g_pen.y, adv, kCellH, g_bg);
+        else {
+            blit_mono_cols(draw_x, y0, bits, gw, gh, st, kAsciiGlyphSrcCol0, kAsciiCellW);
+        }
     } else {
         blit_mono(draw_x, y0, bits, gw, gh, st);
-        /* 紧排英文只推进到墨迹右缘，勿用整格 16 列，否则下一英文字会被误右移、字距变大 */
-        if (latin_use_tight_spacing(lookup_cp) && ink_rcol >= 0)
-            g_mono_right_x = draw_x + ink_rcol;
-        else
-            g_mono_right_x = draw_x + gw - 1;
     }
-    g_pen_x += adv;
+    g_mono_right_x = draw_x + clip_w - 1;
+    g_pen.x += adv;
     g_last_adv = adv;
 }
 
@@ -365,11 +381,10 @@ extern "C" void fb_console_init(const void *multiboot_info, uint32_t multiboot_m
     g_pitch = pitch;
     g_fg = pack_rgb(0, 0, 0);
     g_bg = pack_rgb(255, 255, 255);
-    g_margin = 8;
-    g_pen_x = g_margin;
-    g_pen_y = g_margin;
-    g_last_adv = 16;
-    g_mono_right_x = g_margin - 1;
+    g_pen = {kMargin, kMargin};
+    g_last_adv = kAsciiCellW;
+    g_mono_right_x = kMargin - 1;
+    g_cur_w = 0;
 
     for (uint32_t y = 0; y < g_h; ++y) {
         uint32_t *ln = reinterpret_cast<uint32_t *>(g_fb + y * g_pitch);
@@ -389,6 +404,8 @@ extern "C" void fb_console_puts(const int8_t *utf8)
     if (!g_active || !utf8)
         return;
 
+    cursor_erase();
+
     const uint8_t *p = reinterpret_cast<const uint8_t *>(utf8);
     while (*p) {
         uint8_t c = *p;
@@ -404,8 +421,8 @@ extern "C" void fb_console_puts(const int8_t *utf8)
         }
         if (c == '\r') {
             ++p;
-            g_pen_x = g_margin;
-            g_mono_right_x = g_margin - 1;
+            g_pen.x = kMargin;
+            g_mono_right_x = kMargin - 1;
             continue;
         }
         if (c == '\t') {
@@ -423,4 +440,6 @@ extern "C" void fb_console_puts(const int8_t *utf8)
             break;
         draw_codepoint(cp);
     }
+
+    cursor_paint();
 }
