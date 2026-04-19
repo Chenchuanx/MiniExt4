@@ -1,5 +1,6 @@
 #include <linux/fs.h>
 #include <linux/dirent.h>
+#include <linux/errno.h>
 
 #define MAX_FD 256
 static struct file global_fd_table[MAX_FD];
@@ -18,12 +19,14 @@ int vfs_open(const char *path, int flags, int mode)
             break;
         }
     }
-    if (fd < 0) return -1; // too many open files
+    if (fd < 0) {
+        return -EMFILE;
+    }
 
     struct dentry *cwd = vfs_get_cwd_dentry();
     sb = vfs_get_root_sb();
     if (!sb || !sb->s_root) {
-        return -3;
+        return -ENODEV;
     }
     root = sb->s_root;
     struct dentry *target = 0;
@@ -54,7 +57,7 @@ int vfs_open(const char *path, int flags, int mode)
             struct dentry *parent;
 
             if (!path || path[0] == '\0') {
-                return -21;
+                return -EINVAL;
             }
 
             /* 去掉前导 '/'，得到相对路径部分（逻辑同 vfs_mkdir） */
@@ -65,7 +68,7 @@ int vfs_open(const char *path, int flags, int mode)
                 } while (*rel == '/');
             }
             if (*rel == '\0') {
-                return -22;
+                return -EINVAL;
             }
 
             /* 查找最后一个 '/'，将路径拆分为 parent/path 和 name */
@@ -86,7 +89,7 @@ int vfs_open(const char *path, int flags, int mode)
                 /* 有 '/'：前半部分是父路径，最后一个分量是新文件名 */
                 parent_len = (int)(last_sep - rel);
                 if (parent_len <= 0 || parent_len >= (int)sizeof(parent_buf)) {
-                    return -23;
+                    return -EINVAL;
                 }
                 for (name_len = 0; name_len < parent_len; name_len++) {
                     parent_buf[name_len] = rel[name_len];
@@ -96,15 +99,15 @@ int vfs_open(const char *path, int flags, int mode)
                 parent = (path[0] == '/') ? vfs_path_lookup(root, parent_buf)
                                           : vfs_path_lookup(cwd, parent_buf);
                 if (!parent || !parent->d_inode) {
-                    return -24;
+                    return -ENOENT;
                 }
                 if (!S_ISDIR(parent->d_inode->i_mode)) {
-                    return -25;
+                    return -ENOTDIR;
                 }
 
                 name_start = last_sep + 1;
                 if (*name_start == '\0') {
-                    return -26;
+                    return -EINVAL;
                 }
             }
 
@@ -112,7 +115,7 @@ int vfs_open(const char *path, int flags, int mode)
             name_len = 0;
             while (name_start[name_len] != '\0') {
                 if (name_start[name_len] == '/') {
-                    return -27;
+                    return -EINVAL;
                 }
                 if (name_len < 255) {
                     name_buf[name_len] = name_start[name_len];
@@ -123,7 +126,7 @@ int vfs_open(const char *path, int flags, int mode)
 
             /* 目录 inode 必须支持 create 操作 */
             if (!parent->d_inode || !parent->d_inode->i_op || !parent->d_inode->i_op->create) {
-                return -28;
+                return -EINVAL;
             }
 
             /* 构造 qstr 和 dentry，调用底层文件系统的 create */
@@ -134,18 +137,24 @@ int vfs_open(const char *path, int flags, int mode)
                 qstr_init(&q, name_buf, name_len);
                 dentry = d_alloc(parent, &q);
                 if (!dentry) {
-                    return -29;
+                    return -ENOMEM;
                 }
 
-                if (parent->d_inode->i_op->create(parent->d_inode, dentry, (umode_t)mode, (flags & O_EXCL) ? 1 : 0) != 0) {
-                    dput(dentry);
-                    return -30;
+                {
+                    int cr = parent->d_inode->i_op->create(parent->d_inode, dentry, (umode_t)mode, (flags & O_EXCL) ? 1 : 0);
+                    if (cr != 0) {
+                        dput(dentry);
+                        if (cr < 0) {
+                            return (cr == -1) ? -EIO : cr;
+                        }
+                        return -EIO;
+                    }
                 }
 
                 target = dentry;
             }
         } else {
-            return -2; // not found
+            return -ENOENT;
         }
     }
 
@@ -165,6 +174,9 @@ int vfs_open(const char *path, int flags, int mode)
     if (fops && fops->open) {
         int err = fops->open(inode, f);
         if (err < 0) {
+            if (err == -1) {
+                return -EIO;
+            }
             return err;
         }
     }
@@ -176,7 +188,7 @@ int vfs_open(const char *path, int flags, int mode)
 int vfs_close(int fd)
 {
     if (fd < 0 || fd >= MAX_FD || !fd_used[fd]) {
-        return -1;
+        return -EBADF;
     }
 
     struct file *f = &global_fd_table[fd];
@@ -205,7 +217,9 @@ static int filldir_getdents(void *ctx, const char *name, int name_len,
     reclen = (reclen + 3) & ~3;
 
     if (p->written + reclen > p->count) {
-        if (p->written == 0) p->error = -1; // buffer too small
+        if (p->written == 0) {
+            p->error = -EINVAL;
+        } /* buffer too small */
         return -1; // stop filling
     }
 
@@ -226,12 +240,12 @@ static int filldir_getdents(void *ctx, const char *name, int name_len,
 int vfs_getdents(int fd, char *dirent, unsigned int count)
 {
     if (fd < 0 || fd >= MAX_FD || !fd_used[fd]) {
-        return -1;
+        return -EBADF;
     }
 
     struct file *f = &global_fd_table[fd];
     if (!f->f_op || !f->f_op->readdir) {
-        return -2; // not a directory
+        return -ENOTDIR;
     }
 
     struct getdents_context ctx;
@@ -253,12 +267,12 @@ int vfs_getdents(int fd, char *dirent, unsigned int count)
 int vfs_write(int fd, const char *buf, size_t count)
 {
     if (fd < 0 || fd >= MAX_FD || !fd_used[fd]) {
-        return -1;
+        return -EBADF;
     }
 
     struct file *f = &global_fd_table[fd];
     if (!f->f_op || !f->f_op->write) {
-        return -2;
+        return -EINVAL;
     }
 
     loff_t pos = f->f_pos;
@@ -273,12 +287,12 @@ int vfs_write(int fd, const char *buf, size_t count)
 int vfs_read(int fd, char *buf, size_t count)
 {
     if (fd < 0 || fd >= MAX_FD || !fd_used[fd]) {
-        return -1;
+        return -EBADF;
     }
 
     struct file *f = &global_fd_table[fd];
     if (!f->f_op || !f->f_op->read) {
-        return -2;
+        return -EINVAL;
     }
 
     loff_t pos = f->f_pos;

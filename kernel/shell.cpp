@@ -69,9 +69,8 @@ void simpleShell(const char c, KeyboardDriver *pKeyDriver)
 		}
 
 		if (!found) {
-			sysPrintf((int8_t *)"unknown command: ");
 			sysPrintf(cmd_name);
-			sysPrintf((int8_t *)"\n");
+			sysPrintf((int8_t *)": 未知的命令\n");
 		}
 	}
 

@@ -1,11 +1,16 @@
 .set MAGIC, 0x1badb002
-.set FLAGS, (1 << 0 | 1 << 1)
+.set FLAGS, (1 << 0 | 1 << 1 | 1 << 2)
 .set CHECKNUM, -(MAGIC + FLAGS)
 
 .section .multiboot
     .long MAGIC
     .long FLAGS
     .long CHECKNUM
+    .long 0, 0, 0, 0, 0
+    .long 0
+    .long 1024
+    .long 768
+    .long 32
 
 .section .text
 .extern kernelMain
@@ -14,9 +19,11 @@
 
 loader:
     mov $kernel_stack, %esp
+    mov %eax, %esi
+    mov %ebx, %edi
     call callConstructors
-    push %eax
-    push %ebx
+    push %esi
+    push %edi
     call kernelMain
 
 _stop:

@@ -3,6 +3,7 @@
 #include <kernel/cmds.h>
 #include <lib/syscall.h>
 #include <linux/dirent.h>
+#include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/fs.h>
 #include <lib/time.h>
@@ -115,6 +116,19 @@ static void readable_size(unsigned long size, char *buf, int buf_size)
     buf[j] = '\0';
 }
 
+/* VFS 失败为 -errno；打印时输出正的 errno 数值（见 include/linux/errno.h） */
+static void print_errno_value(int err)
+{
+	char nbuf[16];
+	unsigned long v;
+	if (err < 0) {
+		v = (unsigned long)(-err);
+	} else {
+		v = (unsigned long)err;
+	}
+	u32_to_dec(nbuf, sizeof(nbuf), v);
+	sysPrintf((int8_t *)nbuf);
+}
 
 static void cmd_time(const int8_t *arg) {
 	(void)arg;
@@ -129,7 +143,7 @@ static void cmd_pwd(const int8_t *arg) {
 		sysPrintf((int8_t *)buf);
 		sysPrintf((int8_t *)"\n");
 	} else {
-		sysPrintf((int8_t *)"pwd: error\n");
+		sysPrintf((int8_t *)"pwd: 出错\n");
 	}
 }
 
@@ -173,7 +187,16 @@ static void cmd_ls(const int8_t *arg) {
 
     int fd = sysOpen(path, 0, 0);
     if (fd < 0) {
-        sysPrintf((int8_t *)"ls: cannot access path\n");
+        sysPrintf((int8_t *)"ls: ");
+        sysPrintf((int8_t *)path);
+        sysPrintf((int8_t *)": ");
+        if (fd == -ENOENT) {
+            sysPrintf((int8_t *)"找不到文件或目录\n");
+        } else {
+            sysPrintf((int8_t *)"失败，错误码=");
+            print_errno_value(fd);
+            sysPrintf((int8_t *)"\n");
+        }
         return;
     }
 
@@ -279,44 +302,46 @@ static void cmd_ls(const int8_t *arg) {
 
 static void cmd_mkdir(const int8_t *arg) {
 	if (!arg) {
-		sysPrintf((int8_t *)"mkdir: missing operand\n");
+		sysPrintf((int8_t *)"mkdir: 缺少参数\n");
 	} else {
 		int ret = sysMkdir(arg);
 		if (ret != 0) {
-			sysPrintf((int8_t *)"mkdir: failed\n");
-			sysPrintf((int8_t *)"mkdir: errno=");
-			{
-				char nbuf[16];
-				if (ret < 0) {
-					sysPrintf((int8_t *)"-");
-					u32_to_dec(nbuf, sizeof(nbuf), (unsigned long)(-ret));
-				} else {
-					u32_to_dec(nbuf, sizeof(nbuf), (unsigned long)ret);
-				}
-				sysPrintf((int8_t *)nbuf);
+			sysPrintf((int8_t *)"mkdir: ");
+			sysPrintf((int8_t *)(const char *)arg);
+			sysPrintf((int8_t *)": ");
+			if (ret == -ENOENT) {
+				sysPrintf((int8_t *)"找不到文件或目录\n");
+			} else if (ret == -ENOTDIR) {
+				sysPrintf((int8_t *)"父路径不是目录\n");
+			} else {
+				sysPrintf((int8_t *)"失败，错误码=");
+				print_errno_value(ret);
+				sysPrintf((int8_t *)"\n");
 			}
-			sysPrintf((int8_t *)"\n");
 		}
 	}
 }
 
 static void cmd_touch(const int8_t *arg) {
 	if (!arg) {
-		sysPrintf((int8_t *)"touch: missing operand\n");
+		sysPrintf((int8_t *)"touch: 缺少参数\n");
 		return;
 	}
 
 	int fd = sysOpen((const char *)arg, O_CREAT | O_WRONLY, 0644);
 	if (fd < 0) {
-		sysPrintf((int8_t *)"touch: failed\n");
-		sysPrintf((int8_t *)"touch: errno=");
-		{
-			char nbuf[16];
-			sysPrintf((int8_t *)"-");
-			u32_to_dec(nbuf, sizeof(nbuf), (unsigned long)(-fd));
-			sysPrintf((int8_t *)nbuf);
+		sysPrintf((int8_t *)"touch: ");
+		sysPrintf((int8_t *)(const char *)arg);
+		sysPrintf((int8_t *)": ");
+		if (fd == -ENOENT) {
+			sysPrintf((int8_t *)"找不到文件或目录\n");
+		} else if (fd == -ENOTDIR) {
+			sysPrintf((int8_t *)"父路径不是目录\n");
+		} else {
+			sysPrintf((int8_t *)"失败，错误码=");
+			print_errno_value(fd);
+			sysPrintf((int8_t *)"\n");
 		}
-		sysPrintf((int8_t *)"\n");
 		return;
 	}
 
@@ -325,15 +350,23 @@ static void cmd_touch(const int8_t *arg) {
 
 static void cmd_cat(const int8_t *arg) {
 	if (!arg) {
-		sysPrintf((int8_t *)"cat: missing operand\n");
+		sysPrintf((int8_t *)"cat: 缺少参数\n");
 		return;
 	}
 
 	const char *path = (const char *)arg;
 	int fd = sysOpen(path, O_RDONLY, 0);
 	if (fd < 0) {
-		sysPrintf((int8_t *)"cat: cannot open file\n");
-		sysPrintf((int8_t *)"\n");
+		sysPrintf((int8_t *)"cat: ");
+		sysPrintf((int8_t *)path);
+		sysPrintf((int8_t *)": ");
+		if (fd == -ENOENT) {
+			sysPrintf((int8_t *)"找不到文件或目录\n");
+		} else {
+			sysPrintf((int8_t *)"失败，错误码=");
+			print_errno_value(fd);
+			sysPrintf((int8_t *)"\n");
+		}
 		return;
 	}
 
@@ -345,7 +378,7 @@ static void cmd_cat(const int8_t *arg) {
 	}
 
 	if (nread < 0) {
-		sysPrintf((int8_t *)"cat: read error\n");
+		sysPrintf((int8_t *)"cat: 读取失败\n");
 		sysPrintf((int8_t *)"\n");
 	}
 
@@ -354,13 +387,24 @@ static void cmd_cat(const int8_t *arg) {
 
 static void cmd_rm(const int8_t *arg) {
 	if (!arg) {
-		sysPrintf((int8_t *)"rm: missing operand\n");
+		sysPrintf((int8_t *)"rm: 缺少参数\n");
 		return;
 	}
 
 	int ret = sysUnlink(arg);
 	if (ret != 0) {
-		sysPrintf((int8_t *)"rm: failed\n");
+		sysPrintf((int8_t *)"rm: ");
+		sysPrintf((int8_t *)(const char *)arg);
+		sysPrintf((int8_t *)": ");
+		if (ret == -ENOENT) {
+			sysPrintf((int8_t *)"找不到文件或目录\n");
+		} else if (ret == -EISDIR) {
+			sysPrintf((int8_t *)"无法删除目录\n");
+		} else {
+			sysPrintf((int8_t *)"失败，错误码=");
+			print_errno_value(ret);
+			sysPrintf((int8_t *)"\n");
+		}
 	}
 }
 
@@ -386,7 +430,7 @@ static unsigned long parse_ulong10(const char *s)
 
 static void cmd_test_fill(const int8_t *arg) {
 	if (!arg) {
-		sysPrintf((int8_t *)"test_fill: usage: test_fill PATH BYTES\n");
+		sysPrintf((int8_t *)"test_fill: 用法: test_fill PATH BYTES\n");
 		return;
 	}
 
@@ -408,13 +452,24 @@ static void cmd_test_fill(const int8_t *arg) {
 
 	unsigned long nbytes = parse_ulong10(p);
 	if (path[0] == '\0' || nbytes == (unsigned long)-1) {
-		sysPrintf((int8_t *)"test_fill: usage: test_fill PATH BYTES\n");
+		sysPrintf((int8_t *)"test_fill: 用法: test_fill PATH BYTES\n");
 		return;
 	}
 
 	int fd = sysOpen(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
 	if (fd < 0) {
-		sysPrintf((int8_t *)"test_fill: cannot open file\n");
+		sysPrintf((int8_t *)"test_fill: ");
+		sysPrintf((int8_t *)path);
+		sysPrintf((int8_t *)": ");
+		if (fd == -ENOENT) {
+			sysPrintf((int8_t *)"找不到文件或目录\n");
+		} else if (fd == -ENOTDIR) {
+			sysPrintf((int8_t *)"父路径不是目录\n");
+		} else {
+			sysPrintf((int8_t *)"失败，错误码=");
+			print_errno_value(fd);
+			sysPrintf((int8_t *)"\n");
+		}
 		return;
 	}
 
@@ -436,30 +491,30 @@ static void cmd_test_fill(const int8_t *arg) {
 
 		int w = sysFileWrite(fd, chunk, to_write);
 		if (w < 0) {
-			sysPrintf((int8_t *)"test_fill: write failed (io error)\n");
+			sysPrintf((int8_t *)"test_fill: 写入失败（IO 错误）\n");
 			char req_buf[16];
 			char wrote_buf[16];
 			u32_to_dec(req_buf, sizeof(req_buf), total_req);
 			u32_to_dec(wrote_buf, sizeof(wrote_buf), total_written);
-			sysPrintf((int8_t *)"  requested=");
+			sysPrintf((int8_t *)"  请求=");
 			sysPrintf((int8_t *)req_buf);
-			sysPrintf((int8_t *)" bytes, written=");
+			sysPrintf((int8_t *)" 字节，已写入=");
 			sysPrintf((int8_t *)wrote_buf);
-			sysPrintf((int8_t *)" bytes\n");
+			sysPrintf((int8_t *)" 字节\n");
 			sysClose(fd);
 			return;
 		}
 		if (w == 0) {
-			sysPrintf((int8_t *)"test_fill: no space left (disk full?)\n");
+			sysPrintf((int8_t *)"test_fill: 磁盘空间不足（可能已满）\n");
 			char req_buf[16];
 			char wrote_buf[16];
 			u32_to_dec(req_buf, sizeof(req_buf), total_req);
 			u32_to_dec(wrote_buf, sizeof(wrote_buf), total_written);
-			sysPrintf((int8_t *)"  requested=");
+			sysPrintf((int8_t *)"  请求=");
 			sysPrintf((int8_t *)req_buf);
-			sysPrintf((int8_t *)" bytes, written=");
+			sysPrintf((int8_t *)" 字节，已写入=");
 			sysPrintf((int8_t *)wrote_buf);
-			sysPrintf((int8_t *)" bytes\n");
+			sysPrintf((int8_t *)" 字节\n");
 			sysClose(fd);
 			return;
 		}
@@ -478,7 +533,7 @@ static void cmd_test_fill(const int8_t *arg) {
 	sysPrintf((int8_t *)"s\n");
 
 	sysClose(fd);
-	sysPrintf((int8_t *)"test_fill: ok\n");
+	sysPrintf((int8_t *)"test_fill: 完成\n");
 }
 
 static void cmd_echo(const int8_t *arg) {
@@ -520,7 +575,7 @@ static void cmd_echo(const int8_t *arg) {
 		fname++;
 	}
 	if (*fname == '\0') {
-		sysPrintf((int8_t *)"echo: missing filename after '>'\n");
+		sysPrintf((int8_t *)"echo: 在 '>' 后缺少文件名\n");
 		return;
 	}
 
@@ -533,20 +588,31 @@ static void cmd_echo(const int8_t *arg) {
 	filename[flen] = '\0';
 
 	if (flen == 0) {
-		sysPrintf((int8_t *)"echo: invalid filename\n");
+		sysPrintf((int8_t *)"echo: 无效文件名\n");
 		return;
 	}
 
 	int fd = sysOpen(filename, O_CREAT | O_WRONLY | O_TRUNC, 0644);
 	if (fd < 0) {
-		sysPrintf((int8_t *)"echo: cannot open file\n");
+		sysPrintf((int8_t *)"echo: ");
+		sysPrintf((int8_t *)filename);
+		sysPrintf((int8_t *)": ");
+		if (fd == -ENOENT) {
+			sysPrintf((int8_t *)"找不到文件或目录\n");
+		} else if (fd == -ENOTDIR) {
+			sysPrintf((int8_t *)"父路径不是目录\n");
+		} else {
+			sysPrintf((int8_t *)"失败，错误码=");
+			print_errno_value(fd);
+			sysPrintf((int8_t *)"\n");
+		}
 		return;
 	}
 
 	if (clen > 0) {
 		int written = sysFileWrite(fd, content, clen);
 		if (written < 0) {
-			sysPrintf((int8_t *)"echo: write error\n");
+			sysPrintf((int8_t *)"echo: 写入失败\n");
 			sysClose(fd);
 			return;
 		}
@@ -559,11 +625,22 @@ static void cmd_echo(const int8_t *arg) {
 
 static void cmd_cd(const int8_t *arg) {
 	if (!arg) {
-		sysPrintf((int8_t *)"cd: missing operand\n");
+		sysPrintf((int8_t *)"cd: 缺少参数\n");
 	} else {
 		int ret = sysChdir(arg);
 		if (ret != 0) {
-			sysPrintf((int8_t *)"cd: failed\n");
+			sysPrintf((int8_t *)"cd: ");
+			sysPrintf((int8_t *)(const char *)arg);
+			sysPrintf((int8_t *)": ");
+			if (ret == -ENOENT) {
+				sysPrintf((int8_t *)"找不到文件或目录\n");
+			} else if (ret == -ENOTDIR) {
+				sysPrintf((int8_t *)"不是目录\n");
+			} else {
+				sysPrintf((int8_t *)"失败，错误码=");
+				print_errno_value(ret);
+				sysPrintf((int8_t *)"\n");
+			}
 		}
 	}
 }

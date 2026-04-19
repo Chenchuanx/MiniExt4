@@ -1,6 +1,20 @@
 cmake_minimum_required(VERSION 3.10)
 project(MiniExt4)
 
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/unifont-16.0.04.bmp")
+    message(FATAL_ERROR "缺少 ${CMAKE_SOURCE_DIR}/unifont-16.0.04.bmp（Unifont 16×16 BMP）。请放置后重新 cmake。")
+endif()
+
+set(UNIFONT_OBJ "${CMAKE_BINARY_DIR}/unifont_font.o")
+add_custom_command(
+    OUTPUT ${UNIFONT_OBJ}
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/unifont-16.0.04.bmp ${CMAKE_BINARY_DIR}/unifont.bmp
+    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_BINARY_DIR} objcopy -I binary -O elf32-i386 -B i386 unifont.bmp unifont_font.o
+    COMMAND ${CMAKE_COMMAND} -E remove ${CMAKE_BINARY_DIR}/unifont.bmp
+    DEPENDS ${CMAKE_SOURCE_DIR}/unifont-16.0.04.bmp
+    COMMENT "Embedding Unifont BMP via objcopy"
+)
+
 # 设置C++标准（虽然内核不使用标准库，但设置编译器）
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -59,6 +73,8 @@ set(KERNEL_SOURCES
     drivers/input/mouse.cpp
     drivers/input/handlers.cpp
     lib/printf.cpp
+    drivers/video/fb_console.cpp
+    drivers/video/cjk_glyphs.cpp
     lib/time.cpp
     lib/syscall.cpp
     lib/string.cpp
@@ -81,16 +97,13 @@ target_compile_options(kernel_objs PRIVATE ${KERNEL_CXX_FLAGS})
 # 获取所有对象文件路径
 set(OBJ_FILES "")
 foreach(SOURCE ${KERNEL_SOURCES})
-    get_filename_component(SOURCE_NAME ${SOURCE} NAME_WE)
-    get_filename_component(SOURCE_DIR ${SOURCE} DIRECTORY)
-    string(REPLACE "${CMAKE_SOURCE_DIR}/" "" REL_DIR ${SOURCE_DIR})
     list(APPEND OBJ_FILES "${CMAKE_BINARY_DIR}/CMakeFiles/kernel_objs.dir/${SOURCE}.o")
 endforeach()
 
 # 创建内核可执行文件（使用自定义链接命令）
 add_custom_target(kernel.bin ALL
-    COMMAND ld -melf_i386 -T ${CMAKE_SOURCE_DIR}/linker.ld ${OBJ_FILES} -o ${CMAKE_BINARY_DIR}/kernel.bin
-    DEPENDS kernel_objs
+    COMMAND ld -melf_i386 -T ${CMAKE_SOURCE_DIR}/linker.ld ${OBJ_FILES} ${UNIFONT_OBJ} -o ${CMAKE_BINARY_DIR}/kernel.bin
+    DEPENDS kernel_objs ${UNIFONT_OBJ}
     COMMENT "Linking kernel.bin with custom linker script"
 )
 
@@ -101,6 +114,7 @@ mkdir -p iso/boot/grub
 cp ${CMAKE_BINARY_DIR}/kernel.bin iso/boot/kernel.bin
 echo 'set timeout=0' > iso/boot/grub/grub.cfg
 echo 'set default=0' >> iso/boot/grub/grub.cfg
+echo 'set gfxpayload=1024x768x32' >> iso/boot/grub/grub.cfg
 echo '' >> iso/boot/grub/grub.cfg
 echo 'menuentry \"My operating System\" {' >> iso/boot/grub/grub.cfg
 echo '  multiboot /boot/kernel.bin' >> iso/boot/grub/grub.cfg

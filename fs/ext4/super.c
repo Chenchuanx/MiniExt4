@@ -567,7 +567,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     
     /* 检查魔数，如果不存在则初始化文件系统 */
     if (esb->s_magic != EXT4_SUPER_MAGIC) {
-        printf("Disk is empty, initializing Ext4 filesystem...\n");
+        printf("未检测到有效 Ext4 超级块，正在初始化磁盘上的 Ext4 结构...\n");
         /* 磁盘是空的，按当前硬盘容量初始化：
          * total_blocks = total_sectors / (block_size / 512)
          * 若 IDENTIFY 获取失败，退回到最小默认值。 */
@@ -588,16 +588,16 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         }
         ret = ext4_mkfs(block_size, total_blocks);
         if (ret < 0) {
-            printf("ext4_mkfs failed\n");
+            printf("ext4_mkfs：初始化失败\n");
             free(buf);
             return -1;
         }
-        printf("Ext4 filesystem initialized\n");
+        printf("Ext4 磁盘结构初始化完成\n");
         
         /* 重新读取 superblock */
         ret = ext4_read_block(0, buf);
         if (ret < 0) {
-            printf("ext4: reread superblock failed\n");
+            printf("ext4: 初始化后重新读取超级块失败\n");
             free(buf);
             return -1;
         }
@@ -613,7 +613,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         if (desc_size < 32 || desc_size > (uint16_t)sizeof(struct ext4_group_desc) ||
             (desc_size & 0x7) != 0) {
             /* 本实现默认写 32 字节描述符，异常时回退到 32。 */
-            printf("Invalid ext4 group desc size, fallback to 32\n");
+            printf("ext4: 组描述符大小无效，已回退为 32\n");
             desc_size = 32;
         }
         esb->s_desc_size = desc_size;
@@ -622,7 +622,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     /* 计算块大小 */
     block_size = 1024 << esb->s_log_block_size;
     if (block_size < EXT4_MIN_BLOCK_SIZE || block_size > EXT4_MAX_BLOCK_SIZE) {
-        printf("ext4: invalid block size in superblock\n");
+        printf("ext4: 超级块中的块大小无效\n");
         free(buf);
         return -1;
     }
@@ -633,7 +633,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     /* 分配 Ext4 私有数据 */
     sbi = (struct ext4_sb_info *)malloc(sizeof(*sbi));
     if (!sbi) {
-        printf("ext4: alloc sbi failed\n");
+        printf("ext4: 分配 sbi 失败\n");
         free(buf);
         return -1;
     }
@@ -668,7 +668,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
 
     sbi->s_bmap_cache_buf = (char *)malloc(block_size);
     if (!sbi->s_bmap_cache_buf) {
-        printf("ext4: alloc bitmap cache failed\n");
+        printf("ext4: 分配位图缓存失败\n");
         free(sbi);
         free(buf);
         return -1;
@@ -681,19 +681,19 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         uint32_t fallback_blocks;
         if (sectors_per_block == 0) sectors_per_block = 1;
         if (total_sectors == 0) {
-            printf("ext4: invalid blocks_count and no disk size\n");
+            printf("ext4: blocks_count 无效且无法取得磁盘容量\n");
             free(sbi);
             free(buf);
             return -1;
         }
         fallback_blocks = total_sectors / sectors_per_block;
         if (fallback_blocks == 0) {
-            printf("ext4: invalid fallback blocks_count\n");
+            printf("ext4: 回退得到的 blocks_count 无效\n");
             free(sbi);
             free(buf);
             return -1;
         }
-        printf("ext4: blocks_count is 0, using disk-size fallback\n");
+        printf("ext4: blocks_count 为 0，已按磁盘容量推算\n");
         sbi->s_blocks_count = fallback_blocks;
     }
     if (sbi->s_blocks_per_group == 0) {
@@ -721,7 +721,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         
         ret = ext4_read_block(group_desc_block, buf);
         if (ret < 0) {
-            printf("Failed to read group descriptor\n");
+            printf("读取组描述符失败\n");
             free(sbi);
             free(buf);
             return -1;
@@ -752,7 +752,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
             uint32_t bmap = group0_start + 1 + gd_blocks;
             uint32_t imap = bmap + 1;
             uint32_t itbl = imap + 1;
-            printf("ext4: invalid inode table block in group0, rebuild layout\n");
+            printf("ext4: 第 0 块组 inode 表块号无效，正在重建布局\n");
             sbi->s_group_desc->bg_block_bitmap_lo = bmap;
             sbi->s_group_desc->bg_inode_bitmap_lo = imap;
             sbi->s_group_desc->bg_inode_table_lo = itbl;
@@ -799,7 +799,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     /* 创建根 dentry 和根 inode（VFS 层需要） */
     struct inode *root_inode = ext4_iget(sb, sbi->s_root_ino);
     if (!root_inode) {
-        printf("ext4_iget failed for root inode\n");
+        printf("ext4_iget 读取根 inode 失败\n");
         free(sbi);
         return -1;
     }
@@ -816,7 +816,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     qstr_init(&root_name, "/", 1);
     struct dentry *root_dentry = d_alloc(NULL, &root_name);
     if (!root_dentry) {
-        printf("d_alloc failed for root dentry\n");
+        printf("d_alloc 为根 dentry 分配失败\n");
         vfs_free_inode(root_inode);
         free(sbi);
         return -1;
@@ -863,7 +863,7 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     inode_offset %= block_size;
     
     if (inode_table_block >= sbi->s_blocks_count) {
-        printf("ext4: inode table block out of range\n");
+        printf("ext4: inode 表块号越界\n");
         return NULL;
     }
 
@@ -876,7 +876,7 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     /* 读取包含 inode 的块 */
     ret = ext4_read_block(inode_table_block, buf);
     if (ret < 0) {
-        printf("Failed to read inode table\n");
+        printf("读取 inode 表失败\n");
         free(buf);
         return NULL;
     }
