@@ -8,8 +8,8 @@
     .long CHECKNUM
     .long 0, 0, 0, 0, 0
     .long 0
-    .long 1024
-    .long 768
+    .long 800
+    .long 600
     .long 32
 
 .section .text

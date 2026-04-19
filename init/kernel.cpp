@@ -25,12 +25,24 @@ extern "C" void callConstructors()
         (*i)();
 }
 
+void display_banner() {
+    printf("\t\t  _______     ____   ______   _____ \n");
+    printf("\t\t  / ____\\ \\   / /\\ \\ / / __ \\ / ____|\n");
+    printf("\t\t | |     \\ \\_/ /  \\ V / |  | | (___  \n");
+    printf("\t\t | |      \\   /    > <| |  | |\\___ \\ \n");
+    printf("\t\t | |____   | |    / . \\ |__| |____) |\n");
+    printf("\t\t  \\_____|  |_|   /_/ \\_\\____/|_____/ \n");
+    printf("\t\t                                     \n");
+    printf("\t\t                                     \n");
+}
+
 // 内核主函数
 extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
 {
     fb_console_init(multiboot_structure, static_cast<uint32_t>(magic_number));
 
-    printf("Hello Ext4 World!\n");
+    // printf("Hello Ext4 World!\n");
+    display_banner();
 
     // 初始化全局描述符表
     GlobalDescriptorTable gdt;

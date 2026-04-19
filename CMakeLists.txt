@@ -114,7 +114,7 @@ mkdir -p iso/boot/grub
 cp ${CMAKE_BINARY_DIR}/kernel.bin iso/boot/kernel.bin
 echo 'set timeout=0' > iso/boot/grub/grub.cfg
 echo 'set default=0' >> iso/boot/grub/grub.cfg
-echo 'set gfxpayload=1024x768x32' >> iso/boot/grub/grub.cfg
+echo 'set gfxpayload=800x600x32' >> iso/boot/grub/grub.cfg
 echo '' >> iso/boot/grub/grub.cfg
 echo 'menuentry \"My operating System\" {' >> iso/boot/grub/grub.cfg
 echo '  multiboot /boot/kernel.bin' >> iso/boot/grub/grub.cfg
