@@ -645,6 +645,207 @@ static void cmd_cd(const int8_t *arg) {
 	}
 }
 
+static const char *path_basename(const char *path)
+{
+	const char *last = path;
+	if (!path || *path == '\0') {
+		return path;
+	}
+
+	for (const char *p = path; *p != '\0'; ++p) {
+		if (*p == '/') {
+			last = p + 1;
+		}
+	}
+	return last;
+}
+
+/* 简化 glob：支持 '*' 与 '?' */
+static int match_glob(const char *pat, const char *text)
+{
+	if (!pat || !text) {
+		return 0;
+	}
+
+	if (*pat == '\0') {
+		return *text == '\0';
+	}
+
+	if (*pat == '*') {
+		pat++;
+		if (*pat == '\0') {
+			return 1;
+		}
+		while (*text != '\0') {
+			if (match_glob(pat, text)) {
+				return 1;
+			}
+			text++;
+		}
+		return match_glob(pat, text);
+	}
+
+	if (*pat == '?') {
+		if (*text == '\0') {
+			return 0;
+		}
+		return match_glob(pat + 1, text + 1);
+	}
+
+	if (*pat != *text) {
+		return 0;
+	}
+	return match_glob(pat + 1, text + 1);
+}
+
+static int should_print_find_path(const char *path, const char *name_pat)
+{
+	if (!name_pat || *name_pat == '\0') {
+		return 1;
+	}
+	return match_glob(name_pat, path_basename(path));
+}
+
+static void find_walk(const char *path, const char *name_pat)
+{
+	struct kstat st;
+	int sret = sysStat(path, &st);
+	if (sret < 0) {
+		sysPrintf((int8_t *)"find: ");
+		sysPrintf((int8_t *)path);
+		sysPrintf((int8_t *)": 无法获取属性\n");
+		return;
+	}
+
+	if (should_print_find_path(path, name_pat)) {
+		sysPrintf((int8_t *)path);
+		sysPrintf((int8_t *)"\n");
+	}
+
+	if (!S_ISDIR(st.mode)) {
+		return;
+	}
+
+	int fd = sysOpen(path, 0, 0);
+	if (fd < 0) {
+		sysPrintf((int8_t *)"find: ");
+		sysPrintf((int8_t *)path);
+		sysPrintf((int8_t *)": 无法打开目录\n");
+		return;
+	}
+
+	char buf[1024];
+	int nread;
+
+	while ((nread = sysGetdents(fd, buf, sizeof(buf))) > 0) {
+		int bpos = 0;
+		while (bpos < nread) {
+			struct linux_dirent *d = (struct linux_dirent *)(buf + bpos);
+			const char *name = d->d_name;
+			int name_len = 0;
+			while (name[name_len] != '\0') {
+				name_len++;
+			}
+
+			if (!((name_len == 1 && name[0] == '.') ||
+			      (name_len == 2 && name[0] == '.' && name[1] == '.'))) {
+				char child[256];
+				int pos = 0;
+
+				if (path[0] == '/' && path[1] == '\0') {
+					child[pos++] = '/';
+				} else {
+					while (path[pos] != '\0' && pos < (int)sizeof(child) - 1) {
+						child[pos] = path[pos];
+						pos++;
+					}
+					if (pos > 0 && child[pos - 1] != '/' && pos < (int)sizeof(child) - 1) {
+						child[pos++] = '/';
+					}
+				}
+
+				for (int i = 0; i < name_len && pos < (int)sizeof(child) - 1; i++) {
+					child[pos++] = name[i];
+				}
+				child[pos] = '\0';
+
+				if (name_len > 0 && child[pos] == '\0') {
+					find_walk(child, name_pat);
+				}
+			}
+
+			bpos += d->d_reclen;
+		}
+	}
+
+	sysClose(fd);
+}
+
+static void cmd_find(const int8_t *arg)
+{
+	const char *path = ".";
+	const char *name_pat = 0;
+	int64_t start_time = rtc_get_unix_time();
+
+	if (arg) {
+		const char *p = (const char *)arg;
+		const char *tok1 = 0;
+		const char *tok2 = 0;
+		const char *tok3 = 0;
+		char a1[128] = {0};
+		char a2[128] = {0};
+		char a3[128] = {0};
+		int *lens[3] = {0};
+
+		int l1 = 0, l2 = 0, l3 = 0;
+		lens[0] = &l1; lens[1] = &l2; lens[2] = &l3;
+
+		char *outs[3] = {a1, a2, a3};
+		for (int t = 0; t < 3; t++) {
+			while (*p == ' ' || *p == '\t') {
+				p++;
+			}
+			while (*p != '\0' && *p != ' ' && *p != '\t' && *lens[t] < 127) {
+				outs[t][(*lens[t])++] = *p++;
+			}
+			outs[t][*lens[t]] = '\0';
+		}
+
+		tok1 = (l1 > 0) ? a1 : 0;
+		tok2 = (l2 > 0) ? a2 : 0;
+		tok3 = (l3 > 0) ? a3 : 0;
+
+		if (tok1 && strcmp((const int8_t *)tok1, (const int8_t *)"-name") == 0) {
+			if (!tok2) {
+				sysPrintf((int8_t *)"find: 用法: find [PATH] [-name PATTERN]\n");
+				return;
+			}
+			name_pat = tok2;
+		} else {
+			if (tok1) {
+				path = tok1;
+			}
+			if (tok2) {
+				if (strcmp((const int8_t *)tok2, (const int8_t *)"-name") != 0 || !tok3) {
+					sysPrintf((int8_t *)"find: 用法: find [PATH] [-name PATTERN]\n");
+					return;
+				}
+				name_pat = tok3;
+			}
+		}
+	}
+
+	find_walk(path, name_pat);
+
+	int64_t end_time = rtc_get_unix_time();
+	int64_t duration = end_time - start_time;
+	char duration_buf[16];
+	u32_to_dec(duration_buf, sizeof(duration_buf), (unsigned long)duration);
+	sysPrintf((int8_t *)"find: 完成, 耗时 ");
+	sysPrintf((int8_t *)duration_buf);
+	sysPrintf((int8_t *)"s\n");
+}
+
 static void cmd_help(const int8_t *arg);
 
 const struct cmd_entry cmd_table[] = {
@@ -657,6 +858,7 @@ const struct cmd_entry cmd_table[] = {
 	{"touch", cmd_touch, "创建空文件（不存在时）"},
 	{"echo", cmd_echo, "输出文本；支持 > 重定向到文件"},
 	{"cat", cmd_cat, "显示文件内容"},
+	{"find", cmd_find, "递归查找: find [PATH] [-name PATTERN]"},
 	{"rm", cmd_rm, "删除文件"},
 	{0, 0, 0},
 	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},

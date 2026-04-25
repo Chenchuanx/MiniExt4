@@ -59,10 +59,20 @@ void simpleShell(const char c, KeyboardDriver *pKeyDriver)
 	parse_command(cmd, &cmd_name, &cmd_arg);
 
 	if (cmd_name != 0) {
+		int index = 0;
 		bool found = false;
-		for (int i = 0; cmd_table[i].name != 0; i++) {
-			if (strcmp(cmd_name, cmd_table[i].name) == 0) {
-				cmd_table[i].handler(cmd_arg);
+		// 内置命令
+		for (index = 0; cmd_table[index].name != 0; index++) {
+			if (strcmp(cmd_name, cmd_table[index].name) == 0) {
+				cmd_table[index].handler(cmd_arg);
+				found = true;
+				break;
+			}
+		}
+		// 测试命令
+		for (index++; cmd_table[index].name != 0; index++) {
+			if (strcmp(cmd_name, cmd_table[index].name) == 0) {
+				cmd_table[index].handler(cmd_arg);
 				found = true;
 				break;
 			}
