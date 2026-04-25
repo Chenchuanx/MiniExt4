@@ -1,4 +1,5 @@
 # include <kernel/interrupts.h>
+# include <drivers/pit.h>
 
 #include <lib/printf.h>
 
@@ -138,6 +139,7 @@ uint32_t InterruptManager::DoHandleInterrupt(uint8_t interruptNumber, uint32_t e
 
     if (interruptNumber == 0x20)
     {
+        pit_on_irq_tick();
         esp = (uint32_t)taskManager->Schedule((CPUState*)esp);
     }
     

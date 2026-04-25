@@ -1,6 +1,5 @@
 #include <drivers/keyboard.h>
 #include <lib/printf.h>
-void simpleShell(const char c, KeyboardDriver * pKeyDriver);
 
 KeyboardEventHandler::KeyboardEventHandler()
 {
@@ -14,6 +13,7 @@ void KeyboardEventHandler::SetDriver(KeyboardDriver * pDriver)
 
 // KeyboardDriver -----------------------------------------------------------------------
 KeyboardDriver::KB_BUFFER KeyboardDriver::kb_buffer = {};
+volatile uint8_t KeyboardDriver::line_ready = 0;
 
 KeyboardDriver::KeyboardDriver(InterruptManager * manager, KeyboardEventHandler * handler)
     : InterruptHandler(0x21, manager), dataPort(0x60), commandPort(0x64), handler(handler)
@@ -78,6 +78,16 @@ int8_t * KeyboardDriver::get_buffer(int8_t * buffer)
     buffer[i] = '\0';
 
     return buffer;
+}
+
+bool KeyboardDriver::consume_line_ready()
+{
+    uint8_t ready = 0;
+    __asm__ volatile("cli");
+    ready = line_ready;
+    line_ready = 0;
+    __asm__ volatile("sti");
+    return ready != 0;
 }
 
 
@@ -249,7 +259,7 @@ uint32_t KeyboardDriver::HandleInterrupt(uint32_t esp)
         break;
     case 0x1C: // Enter
         handler->OnKeyDown('\n');
-        simpleShell('\n', this);
+        line_ready = 1;
         break;
     case 0x39: // Space
         handler->OnKeyDown(' ');

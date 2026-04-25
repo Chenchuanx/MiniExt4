@@ -64,6 +64,7 @@ set(KERNEL_SOURCES
     fs/ext4/htree.c
     fs/bptree.c
     drivers/ata.cpp
+    drivers/pit.cpp
     drivers/rtc.cpp
     kernel/interrupts/interrupts.cpp
     kernel/sched/multitasking.cpp

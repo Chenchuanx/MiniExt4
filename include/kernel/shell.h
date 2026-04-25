@@ -7,6 +7,6 @@
 extern const int8_t SHELL_PROMPT[];
 extern const uint8_t SHELL_PROMPT_LEN;
 
-void simpleShell(const char c, KeyboardDriver * pKeyDriver);
+void simpleShell(KeyboardDriver * pKeyDriver);
 
 #endif

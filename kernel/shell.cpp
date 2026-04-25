@@ -44,9 +44,9 @@ static void parse_command(int8_t *cmd, int8_t **name, const int8_t **arg)
 	}
 }
 
-void simpleShell(const char c, KeyboardDriver *pKeyDriver)
+void simpleShell(KeyboardDriver *pKeyDriver)
 {
-	if (c != '\n') {
+	if (!pKeyDriver->consume_line_ready()) {
 		return;
 	}
 

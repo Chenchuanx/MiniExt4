@@ -1,6 +1,8 @@
 # include <kernel/syscalls.h>
 # include <lib/printf.h>
 # include <drivers/rtc.h>
+# include <drivers/pit.h>
+# include <lib/time.h>
 # include <linux/fs.h>
 
 SyscallHandler::SyscallHandler(InterruptManager * interruptManager)

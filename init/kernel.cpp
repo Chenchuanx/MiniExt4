@@ -10,6 +10,7 @@
 #include <kernel/shell.h>
 #include <drivers/handlers.h>
 #include <drivers/ata.h>
+#include <drivers/pit.h>
 #include <linux/fs.h>
 #include <fs/ext4/ext4.h>
 
@@ -52,6 +53,9 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
 
     // 初始化中断管理器
     InterruptManager interrupts(&gdt, &taskManager);
+
+    // 初始化 PIT 为 1000Hz，提供毫秒级 tick。
+    pit_init(1000);
 
     // 初始化系统调用处理器
     SyscallHandler syscalls(&interrupts);
@@ -99,6 +103,8 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
     // 显示Shell提示符
     printf(SHELL_PROMPT);
 
-    // 主循环
-    while(1);
+    // 主循环：轮询执行已提交的一行命令
+    while (1) {
+        simpleShell(&keyboard);
+    }
 }

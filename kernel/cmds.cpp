@@ -1,4 +1,5 @@
 #include "linux/types.h"
+#include <drivers/pit.h>
 #include <drivers/rtc.h>
 #include <kernel/cmds.h>
 #include <lib/syscall.h>
@@ -42,6 +43,60 @@ static void u32_to_dec(char *buf, int buf_size, unsigned long v)
         buf[out++] = tmp[--pos];
     }
     buf[out] = '\0';
+}
+
+/*
+ * u64_to_dec - 将 64 位无符号整数转换为十进制字符串
+ *
+ * 说明：
+ *  - 在 32 位内核里避免使用 64 位除法/取模，防止引入 libgcc 运行时符号依赖。
+ */
+static void u64_to_dec(char *buf, int buf_size, uint64_t v)
+{
+	if (buf_size <= 1) {
+		return;
+	}
+
+	static const uint64_t pow10[] = {
+		10000000000000000000ULL,
+		1000000000000000000ULL,
+		100000000000000000ULL,
+		10000000000000000ULL,
+		1000000000000000ULL,
+		100000000000000ULL,
+		10000000000000ULL,
+		1000000000000ULL,
+		100000000000ULL,
+		10000000000ULL,
+		1000000000ULL,
+		100000000ULL,
+		10000000ULL,
+		1000000ULL,
+		100000ULL,
+		10000ULL,
+		1000ULL,
+		100ULL,
+		10ULL,
+		1ULL
+	};
+
+	int out = 0;
+	int started = 0;
+	for (int i = 0; i < (int)(sizeof(pow10) / sizeof(pow10[0])); i++) {
+		uint8_t d = 0;
+		while (v >= pow10[i]) {
+			v -= pow10[i];
+			d++;
+		}
+
+		if (d != 0 || started || i == (int)(sizeof(pow10) / sizeof(pow10[0])) - 1) {
+			if (out < buf_size - 1) {
+				buf[out++] = (char)('0' + d);
+			}
+			started = 1;
+		}
+	}
+	buf[out] = '\0';
 }
 
 /*
@@ -408,24 +463,34 @@ static void cmd_rm(const int8_t *arg) {
 	}
 }
 
-static unsigned long parse_ulong10(const char *s)
+enum parse_u64_result {
+	PARSE_U64_OK = 0,
+	PARSE_U64_EMPTY = 1,
+	PARSE_U64_INVALID = 2,
+	PARSE_U64_OVERFLOW = 3,
+};
+
+static int parse_u64_10(const char *s, uint64_t *out)
 {
-	unsigned long v = 0;
+	uint64_t v = 0;
 	if (!s || *s == '\0') {
-		return (unsigned long)-1;
+		return PARSE_U64_EMPTY;
 	}
 	while (*s >= '0' && *s <= '9') {
-		unsigned d = (unsigned)(*s - '0');
-		if (v > ((unsigned long)-1 - d) / 10UL) {
-			return (unsigned long)-1;
+		uint64_t d = (uint64_t)(*s - '0');
+		/* UINT64_MAX = 18446744073709551615 */
+		if (v > 1844674407370955161ULL ||
+		    (v == 1844674407370955161ULL && d > 5ULL)) {
+			return PARSE_U64_OVERFLOW;
 		}
-		v = v * 10UL + d;
+		v = (v << 3) + (v << 1) + d; /* v = v*10 + d */
 		s++;
 	}
 	if (*s != '\0') {
-		return (unsigned long)-1;
+		return PARSE_U64_INVALID;
 	}
-	return v;
+	*out = v;
+	return PARSE_U64_OK;
 }
 
 static void cmd_test_fill(const int8_t *arg) {
@@ -450,13 +515,22 @@ static void cmd_test_fill(const int8_t *arg) {
 		p++;
 	}
 
-	unsigned long nbytes = parse_ulong10(p);
-	if (path[0] == '\0' || nbytes == (unsigned long)-1) {
+	uint64_t nbytes = 0;
+	int parse_ret = parse_u64_10(p, &nbytes);
+	if (path[0] == '\0') {
 		sysPrintf((int8_t *)"test_fill: 用法: test_fill PATH BYTES\n");
 		return;
 	}
+	if (parse_ret != PARSE_U64_OK) {
+		if (parse_ret == PARSE_U64_OVERFLOW) {
+			sysPrintf((int8_t *)"test_fill: BYTES 超过 64 位上限\n");
+		} else {
+			sysPrintf((int8_t *)"test_fill: 用法: test_fill PATH BYTES\n");
+		}
+		return;
+	}
 
-	int fd = sysOpen(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+	int fd = vfs_open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
 	if (fd < 0) {
 		sysPrintf((int8_t *)"test_fill: ");
 		sysPrintf((int8_t *)path);
@@ -473,7 +547,11 @@ static void cmd_test_fill(const int8_t *arg) {
 		return;
 	}
 
-	int64_t start_time = rtc_get_unix_time();
+	uint32_t start_ticks = pit_get_ticks();
+	uint32_t pit_hz = pit_get_frequency_hz();
+	if (pit_hz == 0) {
+		pit_hz = 1000;
+	}
 
 	static const int block_size = 64 * 1024;
 	static char chunk[block_size];
@@ -482,57 +560,59 @@ static void cmd_test_fill(const int8_t *arg) {
 		chunk[i] = (char)0x41;
 	}
 
-	unsigned long total_req = nbytes;
-	unsigned long total_written = 0;
+	uint64_t total_req = nbytes;
+	uint64_t total_written = 0;
 	while (nbytes > 0) {
-		int to_write = (nbytes > (unsigned long)block_size)
+		int to_write = (nbytes > (uint64_t)block_size)
 			? block_size
 			: (int)nbytes;
 
-		int w = sysFileWrite(fd, chunk, to_write);
+		int w = vfs_write(fd, chunk, (size_t)to_write);
 		if (w < 0) {
 			sysPrintf((int8_t *)"test_fill: 写入失败（IO 错误）\n");
-			char req_buf[16];
-			char wrote_buf[16];
-			u32_to_dec(req_buf, sizeof(req_buf), total_req);
-			u32_to_dec(wrote_buf, sizeof(wrote_buf), total_written);
+			char req_buf[32];
+			char wrote_buf[32];
+			u64_to_dec(req_buf, sizeof(req_buf), total_req);
+			u64_to_dec(wrote_buf, sizeof(wrote_buf), total_written);
 			sysPrintf((int8_t *)"  请求=");
 			sysPrintf((int8_t *)req_buf);
 			sysPrintf((int8_t *)" 字节，已写入=");
 			sysPrintf((int8_t *)wrote_buf);
 			sysPrintf((int8_t *)" 字节\n");
-			sysClose(fd);
+			vfs_close(fd);
 			return;
 		}
 		if (w == 0) {
 			sysPrintf((int8_t *)"test_fill: 磁盘空间不足（可能已满）\n");
-			char req_buf[16];
-			char wrote_buf[16];
-			u32_to_dec(req_buf, sizeof(req_buf), total_req);
-			u32_to_dec(wrote_buf, sizeof(wrote_buf), total_written);
+			char req_buf[32];
+			char wrote_buf[32];
+			u64_to_dec(req_buf, sizeof(req_buf), total_req);
+			u64_to_dec(wrote_buf, sizeof(wrote_buf), total_written);
 			sysPrintf((int8_t *)"  请求=");
 			sysPrintf((int8_t *)req_buf);
 			sysPrintf((int8_t *)" 字节，已写入=");
 			sysPrintf((int8_t *)wrote_buf);
 			sysPrintf((int8_t *)" 字节\n");
-			sysClose(fd);
+			vfs_close(fd);
 			return;
 		}
 
-		total_written += (unsigned long)w;
-		nbytes -= (unsigned long)w;
+		total_written += (uint64_t)w;
+		nbytes -= (uint64_t)w;
 
 	}
 
-	int64_t end_time = rtc_get_unix_time();
-	int64_t duration = end_time - start_time;
+	uint32_t end_ticks = pit_get_ticks();
+	uint32_t elapsed_ticks = end_ticks - start_ticks;
+	uint32_t duration_ms = (elapsed_ticks * 1000u) / pit_hz;
 
 	char duration_buf[16];
-	u32_to_dec(duration_buf, sizeof(duration_buf), (unsigned long)duration);
+	u32_to_dec(duration_buf, sizeof(duration_buf), (unsigned long)duration_ms);
+	sysPrintf((int8_t *)"test_fill: 耗时 ");
 	sysPrintf((int8_t *)duration_buf);
-	sysPrintf((int8_t *)"s\n");
+	sysPrintf((int8_t *)"ms\n");
 
-	sysClose(fd);
+	vfs_close(fd);
 	sysPrintf((int8_t *)"test_fill: 完成\n");
 }
 
@@ -785,7 +865,11 @@ static void cmd_find(const int8_t *arg)
 {
 	const char *path = ".";
 	const char *name_pat = 0;
-	int64_t start_time = rtc_get_unix_time();
+	uint32_t start_ticks = pit_get_ticks();
+	uint32_t pit_hz = pit_get_frequency_hz();
+	if (pit_hz == 0) {
+		pit_hz = 1000;
+	}
 
 	if (arg) {
 		const char *p = (const char *)arg;
@@ -837,13 +921,14 @@ static void cmd_find(const int8_t *arg)
 
 	find_walk(path, name_pat);
 
-	int64_t end_time = rtc_get_unix_time();
-	int64_t duration = end_time - start_time;
+	uint32_t end_ticks = pit_get_ticks();
+	uint32_t elapsed_ticks = end_ticks - start_ticks;
+	uint32_t duration_ms = (elapsed_ticks * 1000u) / pit_hz;
 	char duration_buf[16];
-	u32_to_dec(duration_buf, sizeof(duration_buf), (unsigned long)duration);
+	u32_to_dec(duration_buf, sizeof(duration_buf), (unsigned long)duration_ms);
 	sysPrintf((int8_t *)"find: 完成, 耗时 ");
 	sysPrintf((int8_t *)duration_buf);
-	sysPrintf((int8_t *)"s\n");
+	sysPrintf((int8_t *)"ms\n");
 }
 
 static void cmd_help(const int8_t *arg);

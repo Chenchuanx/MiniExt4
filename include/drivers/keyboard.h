@@ -28,6 +28,7 @@ public:
 
     virtual void put_buffer(const int8_t c);
     virtual int8_t * get_buffer(int8_t * buffer);
+    bool consume_line_ready();
     uint32_t HandleInterrupt(uint32_t esp);
     void Activate();
 
@@ -44,6 +45,7 @@ private:
     };
     
     static KB_BUFFER kb_buffer;
+    static volatile uint8_t line_ready;
     KeyboardEventHandler * handler;
 };
 
