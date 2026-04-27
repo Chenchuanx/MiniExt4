@@ -202,7 +202,7 @@ static int ext4_update_group_desc_inode(struct super_block *sb, uint32_t group)
  * 注意：这里只返回 inode 号，不分配 VFS inode 结构体；
  *       VFS inode 由 ext4_alloc_inode() / vfs_alloc_inode() 管理。
  */
-uint32_t ext4_new_inode(struct super_block *sb)
+uint32_t ext4_new_inode_in_group(struct super_block *sb, uint32_t preferred_group)
 {
 	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
 	uint32_t block_size = ext4_get_block_size();
@@ -216,6 +216,12 @@ uint32_t ext4_new_inode(struct super_block *sb)
 	if (!sbi || !sbi->s_group_desc) {
 		return 0;
 	}
+
+	/*
+	 * MiniExt4 当前 inode 位图/表路径仍是单组实现。
+	 * 先保留接口，后续扩展多块组 inode 分配时可直接使用 preferred_group。
+	 */
+	(void)preferred_group;
 
 	inodes_per_group = sbi->s_inodes_per_group;
 
@@ -282,6 +288,11 @@ uint32_t ext4_new_inode(struct super_block *sb)
 	free(bitmap_buf);
 
 	return new_ino;
+}
+
+uint32_t ext4_new_inode(struct super_block *sb)
+{
+	return ext4_new_inode_in_group(sb, 0);
 }
 
 /**

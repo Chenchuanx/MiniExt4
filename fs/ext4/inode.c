@@ -66,6 +66,25 @@ static void simple_free(void *p)
 
 #define EXT4_INODE_SIZE 256
 
+static uint32_t ext4_inode_group_of_ino(struct super_block *sb, uint32_t ino)
+{
+	struct ext4_sb_info *sbi;
+	uint32_t inodes_per_group;
+
+	if (!sb || ino == 0) {
+		return 0;
+	}
+	sbi = (struct ext4_sb_info *)sb->s_fs_info;
+	if (!sbi) {
+		return 0;
+	}
+	inodes_per_group = sbi->s_inodes_per_group;
+	if (inodes_per_group == 0) {
+		return 0;
+	}
+	return (ino - 1) / inodes_per_group;
+}
+
 static uint64_t ext4_extent_pblock_from_ex(const struct ext4_extent *ex)
 {
 	return ((uint64_t)ex->ee_start_hi << 32) | (uint64_t)ex->ee_start_lo;
@@ -272,9 +291,11 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	struct inode *inode;
 	unsigned long ino;
 	struct ext4_inode_info *ei;
+	uint32_t parent_group;
 
 	(void)excl;
-	ino = ext4_new_inode(sb);
+	parent_group = ext4_inode_group_of_ino(sb, (uint32_t)dir->i_ino);
+	ino = ext4_new_inode_in_group(sb, parent_group);
 	if (ino == 0) {
 		return -1; /* 无可用 inode */
 	}
@@ -298,6 +319,7 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	if (ei) {
 		struct ext4_extent_header *eh;
 		memset(ei->i_block, 0, sizeof(ei->i_block));
+		ei->i_alloc_group_hint = parent_group;
 		/* 与 Linux ext4 对齐：普通文件默认使用 extents。 */
 		ei->i_flags |= EXT4_INODE_FLAG_EXTENTS;
 		eh = (struct ext4_extent_header *)ei->i_block;
@@ -334,13 +356,15 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	struct ext4_dir_entry *de;
 	uint16_t rec1, rec2;
 	int ret;
+	uint32_t parent_group;
 
-	ino = ext4_new_inode(sb);
+	parent_group = ext4_inode_group_of_ino(sb, (uint32_t)dir->i_ino);
+	ino = ext4_new_inode_in_group(sb, parent_group);
 	if (ino == 0) {
 		return -1;
 	}
 	/* 新目录默认只占 1 个块，保持与 Linux 常见行为一致（4KB 块时目录大小为 4KB）。 */
-	blocknr = ext4_new_block(sb);
+	blocknr = ext4_new_block_in_group(sb, parent_group);
 	if (blocknr == 0) {
 		ext4_free_inode(sb, (uint32_t)ino);
 		return -1;
@@ -366,6 +390,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (ei) {
 		memset(ei->i_block, 0, sizeof(ei->i_block));
 		ei->i_block[0] = blocknr;
+		ei->i_alloc_group_hint = parent_group;
 	}
 
 	/* 初始化目录块：仅包含 "."、".."，其余空间作为空闲目录项。 */

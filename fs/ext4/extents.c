@@ -494,13 +494,18 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 		{
 			struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+			uint32_t preferred_group = (uint32_t)-1;
 			uint32_t fs_blocks_count = ext4_get_blocks_count();
 			if (sbi && sbi->s_blocks_count > 0 &&
 			    (fs_blocks_count == 0 || sbi->s_blocks_count < fs_blocks_count)) {
 				fs_blocks_count = sbi->s_blocks_count;
 			}
+			if (ei) {
+				preferred_group = ei->i_alloc_group_hint;
+			}
 			uint32_t alloc_len = 1;
-			uint32_t new_block = ext4_new_blocks(sb, EXT4_PREALLOC_GOAL_LEN, &alloc_len);
+			uint32_t new_block = ext4_new_blocks_in_group(sb, EXT4_PREALLOC_GOAL_LEN,
+							       &alloc_len, preferred_group);
 			struct ext4_extent new_ex;
 			struct ext4_extent_header *cur_leaf = path[depth].eh;
 			int level;

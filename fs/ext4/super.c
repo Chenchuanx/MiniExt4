@@ -79,6 +79,30 @@ static void simple_free(void *ptr)
 #define malloc simple_malloc
 #define free simple_free
 
+/* 块组游标表可能较大（每组 4 字节），需大于单块 ext4 位图缓冲常见尺寸 */
+#undef MAX_MALLOC_SIZE
+#define MAX_MALLOC_SIZE 65536
+
+/* 释放挂载过程中分配的 sbi 附属缓冲（不含 flush，调用方应先 balloc_flush） */
+static void ext4_destroy_sbi(struct ext4_sb_info *sbi)
+{
+	if (!sbi)
+		return;
+	if (sbi->s_alloc_goal_bit_per_group) {
+		free(sbi->s_alloc_goal_bit_per_group);
+		sbi->s_alloc_goal_bit_per_group = NULL;
+	}
+	if (sbi->s_bmap_cache_buf) {
+		free(sbi->s_bmap_cache_buf);
+		sbi->s_bmap_cache_buf = NULL;
+	}
+	if (sbi->s_group_desc) {
+		free(sbi->s_group_desc);
+		sbi->s_group_desc = NULL;
+	}
+	free(sbi);
+}
+
 /* mount 时从 on-disk superblock 缓存的几何信息，供分配器做硬边界。 */
 static uint32_t ext4_fs_blocks_count;
 static uint32_t ext4_fs_blocks_per_group;
@@ -119,7 +143,7 @@ static const struct super_operations ext4_sops = {
 /* Ext4 文件系统类型描述 */
 struct file_system_type ext4_fs_type = {
     "ext4",
-    0,
+    FS_REQUIRES_DEV,
     ext4_mount,
     ext4_kill_sb,
     { NULL, NULL },
@@ -655,7 +679,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     sbi->s_hash_seed[3] = esb->s_hash_seed[3];
     sbi->s_def_hash_version = esb->s_def_hash_version;
     sbi->s_alloc_goal_group = 0;
-    sbi->s_alloc_goal_bit = 1;
+    sbi->s_alloc_goal_bit_per_group = NULL;
     sbi->s_alloc_last_group = 0;
     sbi->s_alloc_last_bit = 1;
     sbi->s_bmap_cache_group = 0;
@@ -711,6 +735,29 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     ext4_fs_blocks_count = sbi->s_blocks_count;
     ext4_fs_blocks_per_group = sbi->s_blocks_per_group;
     sbi->s_groups_count = (sbi->s_blocks_count + sbi->s_blocks_per_group - 1) / sbi->s_blocks_per_group;
+
+    /* 每组一个 next-fit 游标（组内块位图 bit 下标，从 1 起与 balloc 一致） */
+    if (sbi->s_groups_count > 0) {
+        size_t cur_bytes = (size_t)sbi->s_groups_count * sizeof(uint32_t);
+        if (cur_bytes > MAX_MALLOC_SIZE) {
+            printf("ext4: 块组数过大，无法分配按组游标表\n");
+            ext4_destroy_sbi(sbi);
+            free(buf);
+            return -1;
+        }
+        sbi->s_alloc_goal_bit_per_group = (uint32_t *)malloc(cur_bytes);
+        if (!sbi->s_alloc_goal_bit_per_group) {
+            printf("ext4: 分配按组块分配游标失败\n");
+            ext4_destroy_sbi(sbi);
+            free(buf);
+            return -1;
+        }
+        {
+            uint32_t gi;
+            for (gi = 0; gi < sbi->s_groups_count; gi++)
+                sbi->s_alloc_goal_bit_per_group[gi] = 1;
+        }
+    }
     
     /* 读取第一个块组描述符（简化版，只读第一个） */
     if (sbi->s_groups_count > 0) {
@@ -722,14 +769,14 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         ret = ext4_read_block(group_desc_block, buf);
         if (ret < 0) {
             printf("读取组描述符失败\n");
-            free(sbi);
+            ext4_destroy_sbi(sbi);
             free(buf);
             return -1;
         }
         
         sbi->s_group_desc = (struct ext4_group_desc *)malloc(sizeof(struct ext4_group_desc));
         if (!sbi->s_group_desc) {
-            free(sbi);
+            ext4_destroy_sbi(sbi);
             free(buf);
             return -1;
         }
@@ -800,7 +847,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     struct inode *root_inode = ext4_iget(sb, sbi->s_root_ino);
     if (!root_inode) {
         printf("ext4_iget 读取根 inode 失败\n");
-        free(sbi);
+        ext4_destroy_sbi(sbi);
         return -1;
     }
     /* 防御式修正：某些恢复场景下根 inode 模式可能损坏，导致 mkdir/create 路径不可用。 */
@@ -818,7 +865,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     if (!root_dentry) {
         printf("d_alloc 为根 dentry 分配失败\n");
         vfs_free_inode(root_inode);
-        free(sbi);
+        ext4_destroy_sbi(sbi);
         return -1;
     }
     
@@ -907,6 +954,11 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     /* 填充 Ext4 私有数据 */
     memcpy(ei->i_block, raw_inode->i_block, sizeof(raw_inode->i_block));
     ei->i_flags = raw_inode->i_flags;
+    if (sbi->s_inodes_per_group > 0) {
+        ei->i_alloc_group_hint = (ino - 1) / sbi->s_inodes_per_group;
+    } else {
+        ei->i_alloc_group_hint = 0;
+    }
     
     /* 设置 inode 操作和默认文件操作（参考 Linux fs/ext4/inode.c） */
     if (S_ISDIR(inode->i_mode)) {
@@ -1104,14 +1156,7 @@ static void ext4_kill_sb(struct super_block *sb)
     sbi = (struct ext4_sb_info *)sb->s_fs_info;
     if (sbi) {
         (void)ext4_balloc_flush(sb);
-        if (sbi->s_bmap_cache_buf) {
-            free(sbi->s_bmap_cache_buf);
-            sbi->s_bmap_cache_buf = NULL;
-        }
-        if (sbi->s_group_desc) {
-            free(sbi->s_group_desc);
-        }
-        free(sbi);
+        ext4_destroy_sbi(sbi);
         sb->s_fs_info = NULL;
     }
 }

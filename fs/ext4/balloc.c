@@ -287,7 +287,8 @@ int ext4_balloc_flush(struct super_block *sb)
  * 从块位图中找到第一个空闲块，标记为已使用
  * 返回分配的块号，失败返回 0
  */
-uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *out_len)
+uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
+				  uint32_t *out_len, uint32_t preferred_group)
 {
 	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
 	uint32_t block_size = ext4_get_block_size();
@@ -355,8 +356,11 @@ uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *ou
 		return 0;
 	}
 
-	/* Linux ext4 类似思路：从 goal 开始做 next-fit，而不是每次从组 0 扫描 */
+	/* 先尝试请求级首选组，再回退到全局 goal（next-fit）。 */
 	start_group = sbi->s_alloc_goal_group;
+	if (preferred_group < groups_count) {
+		start_group = preferred_group;
+	}
 	if (start_group >= groups_count) start_group = 0;
 
 	for (groups_scanned = 0; groups_scanned < groups_count; groups_scanned++) {
@@ -383,11 +387,12 @@ uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *ou
 
 		bitmap_buf = sbi->s_bmap_cache_buf;
 
-		/* 组内 next-fit：优先从 goal bit 开始扫，找不到再回卷到前半段 */
+		/* 组内 next-fit：每组独立游标；无表时从 bit 1 起扫 */
 		start_i = 1;
-		if (g == sbi->s_alloc_goal_group && sbi->s_alloc_goal_bit < group_blocks) {
-			start_i = sbi->s_alloc_goal_bit;
-			if (start_i < 1) start_i = 1;
+		if (sbi->s_alloc_goal_bit_per_group && g < sbi->s_groups_count) {
+			uint32_t gb = sbi->s_alloc_goal_bit_per_group[g];
+			if (gb >= 1 && gb < group_blocks)
+				start_i = gb;
 		}
 
 		limit_i = group_blocks;
@@ -472,14 +477,28 @@ uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *ou
 		if (ext4_write_group_desc(sb, g, &gd_local) < 0) return 0;
 		if (g == 0) *sbi->s_group_desc = gd_local;
 
-		/* 更新 next-fit 游标 */
+		/* 更新 next-fit 游标：每组独立；跨组起点仍用 s_alloc_goal_group */
 		sbi->s_alloc_last_group = g;
 		sbi->s_alloc_last_bit = i + alloc_len - 1;
-		sbi->s_alloc_goal_group = g;
-		sbi->s_alloc_goal_bit = i + alloc_len;
-		if (sbi->s_alloc_goal_bit >= group_blocks) {
-			sbi->s_alloc_goal_group = (g + 1 < groups_count) ? (g + 1) : 0;
-			sbi->s_alloc_goal_bit = 1;
+		{
+			uint32_t next_bit = i + alloc_len;
+			if (sbi->s_alloc_goal_bit_per_group && g < sbi->s_groups_count) {
+				if (next_bit >= group_blocks) {
+					sbi->s_alloc_goal_bit_per_group[g] = 1;
+					sbi->s_alloc_goal_group =
+						(g + 1 < groups_count) ? (g + 1) : 0;
+				} else {
+					sbi->s_alloc_goal_bit_per_group[g] = next_bit;
+					sbi->s_alloc_goal_group = g;
+				}
+			} else {
+				if (next_bit >= group_blocks) {
+					sbi->s_alloc_goal_group =
+						(g + 1 < groups_count) ? (g + 1) : 0;
+				} else {
+					sbi->s_alloc_goal_group = g;
+				}
+			}
 		}
 
 		/* Linux 类似的延迟统计更新：批量同步 super free count */
@@ -498,10 +517,21 @@ uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *ou
 	return new_block;
 }
 
+uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *out_len)
+{
+	return ext4_new_blocks_in_group(sb, goal_len, out_len, (uint32_t)-1);
+}
+
 uint32_t ext4_new_block(struct super_block *sb)
 {
 	uint32_t alloc_len = 0;
 	return ext4_new_blocks(sb, 1, &alloc_len);
+}
+
+uint32_t ext4_new_block_in_group(struct super_block *sb, uint32_t preferred_group)
+{
+	uint32_t alloc_len = 0;
+	return ext4_new_blocks_in_group(sb, 1, &alloc_len, preferred_group);
 }
 
 /**

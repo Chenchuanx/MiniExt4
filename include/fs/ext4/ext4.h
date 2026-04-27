@@ -278,8 +278,8 @@ struct ext4_sb_info {
 	uint8_t		s_def_hash_version;
 
 	/* 块分配器状态（参考 Linux ext4 的 goal + bitmap cache 思路） */
-	uint32_t	s_alloc_goal_group;      /* next-fit 起始组 */
-	uint32_t	s_alloc_goal_bit;        /* 组内 next-fit 起始 bit */
+	uint32_t	s_alloc_goal_group;      /* 无首选组时 next-fit 起始块组 */
+	uint32_t	*s_alloc_goal_bit_per_group; /* 每组块位图内 next-fit 起始 bit（动态分配） */
 	uint32_t	s_alloc_last_group;      /* 最近一次成功分配所在组 */
 	uint32_t	s_alloc_last_bit;        /* 最近一次成功分配所在 bit */
 
@@ -304,6 +304,7 @@ struct ext4_inode_info {
 	/* 从磁盘 inode 读取的信息 */
 	uint32_t	i_block[15];	/* 块指针数组 */
 	uint32_t	i_flags;	/* Ext4 Inode 标志 */
+	uint32_t	i_alloc_group_hint; /* 数据块分配首选组（内存 hint） */
 
 	/* 目录索引用内存结构（基于 B+Tree），非持久化 */
 	void		*dir_index;	/* 指向内部目录索引根/上下文 */
@@ -358,11 +359,15 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks);
 /* 块分配和释放 */
 uint32_t ext4_new_block(struct super_block *sb);
 uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *out_len);
+uint32_t ext4_new_block_in_group(struct super_block *sb, uint32_t preferred_group);
+uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
+				  uint32_t *out_len, uint32_t preferred_group);
 int ext4_free_block(struct super_block *sb, uint32_t blocknr);
 int ext4_balloc_flush(struct super_block *sb);
 
 /* Inode 分配和释放 */
 uint32_t ext4_new_inode(struct super_block *sb);
+uint32_t ext4_new_inode_in_group(struct super_block *sb, uint32_t preferred_group);
 int ext4_free_inode(struct super_block *sb, uint32_t ino);
 
 /* 将块组描述符中的空闲块/inode 计数写回磁盘超级块（单块组镜像与 Linux 一致） */

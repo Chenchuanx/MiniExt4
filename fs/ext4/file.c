@@ -73,12 +73,21 @@ static int ext4_legacy_get_data_block(struct inode *inode, uint32_t lblock,
 	struct ext4_inode_info *ei = (struct ext4_inode_info *)inode->i_private;
 	uint32_t block_size = ext4_get_block_size();
 	uint32_t ptrs_per_block = block_size / 4;
+	uint32_t preferred_group = 0;
 	uint32_t *ind_buf;
 	uint32_t blk;
 	int new_flag = 0;
 
 	if (!ei || !out_block || block_size == 0) {
 		return -1;
+	}
+	if (inode->i_ino > 0) {
+		struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+		if (ei->i_alloc_group_hint || !sbi || sbi->s_inodes_per_group == 0) {
+			preferred_group = ei->i_alloc_group_hint;
+		} else {
+			preferred_group = (inode->i_ino - 1) / sbi->s_inodes_per_group;
+		}
 	}
 
 	*out_block = 0;
@@ -89,7 +98,7 @@ static int ext4_legacy_get_data_block(struct inode *inode, uint32_t lblock,
 	/* 直接块 */
 	if (lblock < 12) {
 		if (ei->i_block[lblock] == 0 && create) {
-			blk = ext4_new_block(sb);
+			blk = ext4_new_block_in_group(sb, preferred_group);
 			if (blk == 0) {
 				return -1;
 			}
@@ -118,7 +127,7 @@ static int ext4_legacy_get_data_block(struct inode *inode, uint32_t lblock,
 				return 0;
 			}
 			/* 分配间接块并清零 */
-			blk = ext4_new_block(sb);
+			blk = ext4_new_block_in_group(sb, preferred_group);
 			if (blk == 0) {
 				free(ind_buf);
 				return -1;
@@ -137,7 +146,7 @@ static int ext4_legacy_get_data_block(struct inode *inode, uint32_t lblock,
 		}
 
 		if (ind_buf[lblock] == 0 && create) {
-			uint32_t data_blk = ext4_new_block(sb);
+			uint32_t data_blk = ext4_new_block_in_group(sb, preferred_group);
 			if (data_blk == 0) {
 				free(ind_buf);
 				return -1;
@@ -190,7 +199,7 @@ static int ext4_legacy_get_data_block(struct inode *inode, uint32_t lblock,
 				return 0;
 			}
 			/* 分配一级间接块并清零 */
-			first_blk = ext4_new_block(sb);
+			first_blk = ext4_new_block_in_group(sb, preferred_group);
 			if (first_blk == 0) {
 				free(first_buf);
 				return -1;
@@ -223,7 +232,7 @@ static int ext4_legacy_get_data_block(struct inode *inode, uint32_t lblock,
 				free(ind_buf);
 				return 0;
 			}
-			second_blk = ext4_new_block(sb);
+			second_blk = ext4_new_block_in_group(sb, preferred_group);
 			if (second_blk == 0) {
 				free(first_buf);
 				free(ind_buf);
@@ -251,7 +260,7 @@ static int ext4_legacy_get_data_block(struct inode *inode, uint32_t lblock,
 
 		/* 二级间接块中的实际数据块号 */
 		if (ind_buf[second_index] == 0 && create) {
-			uint32_t data_blk = ext4_new_block(sb);
+			uint32_t data_blk = ext4_new_block_in_group(sb, preferred_group);
 			if (data_blk == 0) {
 				free(first_buf);
 				free(ind_buf);
