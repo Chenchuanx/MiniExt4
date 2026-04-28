@@ -95,7 +95,8 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 		return (struct dentry *)0;
 	}
 
-	dentry = start;
+	/* 持有 start 引用，后续逐级下探时统一平衡引用计数。 */
+	dentry = dget(start);
 	p = path;
 
 	/* 绝对路径：以 '/' 开头，从根开始；相对路径：从 start 开始 */
@@ -114,6 +115,7 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 		struct inode *dir;
 
 		if (ret < 0) {
+			dput(dentry);
 			return (struct dentry *)0;
 		}
 		if (ret == 0) {
@@ -130,13 +132,16 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 		/* 处理 ".." */
 		if (name_len == 2 && name_buf[0] == '.' && name_buf[1] == '.') {
 			if (dentry->d_parent) {
-				dentry = dentry->d_parent;
+				struct dentry *parent = dget(dentry->d_parent);
+				dput(dentry);
+				dentry = parent;
 			}
 			goto next;
 		}
 
 		dir = dentry->d_inode;
 		if (!dir || !dir->i_op || !dir->i_op->lookup) {
+			dput(dentry);
 			return (struct dentry *)0;
 		}
 
@@ -153,6 +158,7 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 				/* 未命中缓存：分配新 dentry，并让文件系统 lookup 填充 */
 				child = d_alloc(dentry, &q);
 				if (!child) {
+					dput(dentry);
 					return (struct dentry *)0;
 				}
 				/* 文件系统的 lookup 负责设置 child->d_inode */
@@ -164,9 +170,12 @@ struct dentry *vfs_path_lookup(struct dentry *start, const char *path)
 				if (child) {
 					dput(child);
 				}
+				dput(dentry);
 				return (struct dentry *)0;
 			}
 
+			/* child 成为新的当前节点，释放上一层临时引用。 */
+			dput(dentry);
 			dentry = child;
 		}
 

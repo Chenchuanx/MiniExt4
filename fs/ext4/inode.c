@@ -367,19 +367,19 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	parent_group = ext4_inode_group_of_ino(sb, (uint32_t)dir->i_ino);
 	ino = ext4_new_inode_in_group(sb, parent_group);
 	if (ino == 0) {
-		return -1;
+		return -ENOSPC;
 	}
 	/* 新目录默认只占 1 个块，保持与 Linux 常见行为一致（4KB 块时目录大小为 4KB）。 */
 	blocknr = ext4_new_block_in_group(sb, parent_group);
 	if (blocknr == 0) {
 		ext4_free_inode(sb, (uint32_t)ino);
-		return -1;
+		return -ENOSPC;
 	}
 	inode = sb->s_op->alloc_inode(sb);
 	if (!inode) {
 		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
-		return -1;
+		return -ENOMEM;
 	}
 	inode->i_ino = ino;
 	inode->i_mode = S_IFDIR | (mode & 0777);
@@ -405,7 +405,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 		sb->s_op->destroy_inode(inode);
 		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
-		return -1;
+		return -ENOMEM;
 	}
 	memset(buf, 0, block_size);
 	de = (struct ext4_dir_entry *)buf;
@@ -444,7 +444,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 		sb->s_op->destroy_inode(inode);
 		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
-		return -1;
+		return -EIO;
 	}
 	free(buf);
 	sb->s_op->write_inode(inode, NULL);
@@ -454,7 +454,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 		 * 父目录中未成功添加目录项，不需要额外回滚。 */
 		ext4_free_block(sb, blocknr);
 		ext4_free_inode(sb, (uint32_t)ino);
-		return -1;
+		return -ENOSPC;
 	}
 	d_instantiate(dentry, inode);
 	/* 父目录 nlink 加 1 */

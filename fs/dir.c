@@ -148,6 +148,7 @@ int vfs_mkdir(const char *path, umode_t mode)
 	struct dentry *root;
 	struct dentry *cwd;
 	struct dentry *parent;
+	int parent_from_lookup = 0;
 	const char *rel;
 	const char *scan;
 	const char *last_sep;
@@ -209,10 +210,12 @@ int vfs_mkdir(const char *path, umode_t mode)
 
 		parent = (path[0] == '/') ? vfs_path_lookup(root, parent_buf)
 					  : vfs_path_lookup(cwd, parent_buf);
+		parent_from_lookup = 1;
 		if (!parent || !parent->d_inode) {
 			return -ENOENT;
 		}
 		if (!S_ISDIR(parent->d_inode->i_mode)) {
+			dput(parent);
 			return -ENOTDIR;
 		}
 
@@ -238,6 +241,9 @@ int vfs_mkdir(const char *path, umode_t mode)
 
 	/* 目录 inode 必须支持 mkdir 操作 */
 	if (!parent->d_inode || !parent->d_inode->i_op || !parent->d_inode->i_op->mkdir) {
+		if (parent_from_lookup) {
+			dput(parent);
+		}
 		return -EINVAL;
 	}
 
@@ -255,12 +261,21 @@ int vfs_mkdir(const char *path, umode_t mode)
 		{
 			int mr = parent->d_inode->i_op->mkdir(parent->d_inode, dentry, mode);
 			if (mr != 0) {
+				dput(dentry);
+				if (parent_from_lookup) {
+					dput(parent);
+				}
 				if (mr < 0) {
 					return coerce_fs_errno(mr);
 				}
 				return -EIO;
 			}
 		}
+		/* mkdir 成功后释放本次创建流程持有的临时 dentry 引用，避免泄漏。 */
+		dput(dentry);
+	}
+	if (parent_from_lookup) {
+		dput(parent);
 	}
 
 	return 0;
@@ -321,9 +336,31 @@ int vfs_chdir(const char *path)
 
 	/* 必须是目录 */
 	if (!S_ISDIR(target->d_inode->i_mode)) {
+		dput(target);
 		return -ENOTDIR;
 	}
 
+	/*
+	 * 维护 cwd 的引用生命周期：
+	 * - 新 cwd 先 dget，确保即使 target 来自 root 直指也有持有引用
+	 * - 再释放旧 cwd，避免 chdir 链式调用导致 dentry/inode 泄漏
+	 */
+	if (target == cwd) {
+		/* 查找到当前目录时，仅平衡路径查找产生的临时引用。 */
+		if (target != root) {
+			dput(target);
+		}
+		return 0;
+	}
+
+	dget(target);
+	if (cwd && cwd != target) {
+		dput(cwd);
+	}
+	if (target != root) {
+		/* target 来自查找路径的临时引用，转移给 cwd 后需要平衡一次。 */
+		dput(target);
+	}
 	vfs_cwd = target;
 	return 0;
 }

@@ -183,7 +183,11 @@ void dput(struct dentry *dentry)
 		if (dentry->d_inode) {
 			struct inode *inode = dentry->d_inode;
 			dentry->d_inode = (struct inode *)0;
-
+			/*
+			 * 简化版 iput：
+			 * - dentry 释放时减少一次 inode 引用
+			 * - 当只剩“分配时保底引用”时（<=1），回收 inode 对象
+			 */
 			if (inode->i_count > 0) {
 				inode->i_count--;
 			}
