@@ -107,6 +107,13 @@ static inline void cpu_to_le16_val(uint16_t *p, uint16_t x) { *p = x; }
 /* 目录项记录长度（按 4 字节对齐） */
 #define EXT4_DIR_REC_LEN(name_len) (((name_len) + 8 + 3) & ~3)
 
+/*
+ * 目录内存索引开关：
+ * 当前 B+Tree 索引在高频 churn 场景下存在稳定性问题（64 阈值附近容易触发异常）。
+ * 先关闭，统一回退到 on-disk 线性扫描路径，优先保证功能稳定。
+ */
+#define EXT4_DIR_MEM_INDEX_ENABLED 1
+
 /* === 目录 B+Tree 索引（仅内存） ======================================= */
 
 struct ext4_dir_index_entry {
@@ -173,6 +180,10 @@ static u64 ext4_dir_default_hash(const struct qstr *name, void *ctx)
 
 static struct ext4_dir_index *ext4_dir_get_index(struct inode *dir)
 {
+#if !EXT4_DIR_MEM_INDEX_ENABLED
+	(void)dir;
+	return (struct ext4_dir_index *)0;
+#else
 	struct ext4_inode_info *ei = (struct ext4_inode_info *)dir->i_private;
 	struct ext4_dir_index *idx;
 
@@ -200,6 +211,7 @@ static struct ext4_dir_index *ext4_dir_get_index(struct inode *dir)
 
 	ei->dir_index = idx;
 	return idx;
+#endif
 }
 
 /* 目录项变更后丢弃内存中的哈希索引，避免 remove 后 B+Tree 仍指向旧偏移 */

@@ -125,6 +125,77 @@ static void bptree_leaf_insert_nosplit(struct bptree_node *leaf, u64 key, void *
 	leaf->num_keys++;
 }
 
+/* 叶子满节点插入：使用临时数组避免越界写入 */
+static int bptree_leaf_insert_split(struct bptree_root *root,
+				    struct bptree_node *leaf,
+				    u64 key, void *value,
+				    struct bptree_node **new_leaf_out,
+				    u64 *promote_key_out)
+{
+	u64 tmp_keys[BPTREE_MAX_KEYS + 1];
+	void *tmp_vals[BPTREE_MAX_KEYS + 1];
+	struct bptree_node *new_leaf;
+	int old_n = leaf->num_keys;
+	int pos = 0;
+	int i;
+	int split;
+
+	/* 满结点场景下 old_n 应为 BPTREE_MAX_KEYS */
+	if (old_n != BPTREE_MAX_KEYS)
+		return -1;
+
+	/* 找插入位置；相同 key 直接更新并返回，不需要分裂 */
+	while (pos < old_n && leaf->keys[pos] < key)
+		pos++;
+	if (pos < old_n && leaf->keys[pos] == key) {
+		leaf->u.values[pos] = value;
+		*new_leaf_out = (struct bptree_node *)0;
+		return 0;
+	}
+
+	/* 合并到临时数组（共 old_n + 1 项） */
+	for (i = 0; i < pos; i++) {
+		tmp_keys[i] = leaf->keys[i];
+		tmp_vals[i] = leaf->u.values[i];
+	}
+	tmp_keys[pos] = key;
+	tmp_vals[pos] = value;
+	for (i = pos; i < old_n; i++) {
+		tmp_keys[i + 1] = leaf->keys[i];
+		tmp_vals[i + 1] = leaf->u.values[i];
+	}
+
+	new_leaf = bptree_new_node(root, 1);
+	if (!new_leaf)
+		return -1;
+
+	/* 9 项 -> 左 4、右 5（当 MAX_KEYS=8） */
+	split = (BPTREE_MAX_KEYS + 1) / 2;
+
+	leaf->num_keys = split;
+	for (i = 0; i < split; i++) {
+		leaf->keys[i] = tmp_keys[i];
+		leaf->u.values[i] = tmp_vals[i];
+	}
+	for (; i < BPTREE_MAX_KEYS; i++) {
+		leaf->keys[i] = 0;
+		leaf->u.values[i] = (void *)0;
+	}
+
+	new_leaf->num_keys = (BPTREE_MAX_KEYS + 1) - split;
+	for (i = 0; i < new_leaf->num_keys; i++) {
+		new_leaf->keys[i] = tmp_keys[split + i];
+		new_leaf->u.values[i] = tmp_vals[split + i];
+	}
+
+	new_leaf->next = leaf->next;
+	leaf->next = new_leaf;
+
+	*new_leaf_out = new_leaf;
+	*promote_key_out = new_leaf->keys[0];
+	return 0;
+}
+
 /* 内部结点插入一个 (key, child)（不考虑溢出） */
 static void bptree_internal_insert_nosplit(struct bptree_node *node,
 					   u64 key,
@@ -140,6 +211,76 @@ static void bptree_internal_insert_nosplit(struct bptree_node *node,
 	node->keys[i + 1] = key;
 	node->u.children[i + 2] = child;
 	node->num_keys++;
+}
+
+/* 内部满节点插入：使用临时数组避免越界写入 */
+static int bptree_internal_insert_split(struct bptree_root *root,
+					struct bptree_node *node,
+					u64 key, struct bptree_node *child,
+					struct bptree_node **new_node_out,
+					u64 *promote_key_out)
+{
+	u64 tmp_keys[BPTREE_MAX_KEYS + 1];
+	struct bptree_node *tmp_children[BPTREE_MAX_KEYS + 2];
+	struct bptree_node *new_node;
+	int old_n = node->num_keys;
+	int ins = 0;
+	int i;
+	int mid;
+	int right_n;
+
+	if (old_n != BPTREE_MAX_KEYS)
+		return -1;
+
+	/* 找插入位置：key 插入到 children[ins] 与 children[ins+1] 间 */
+	while (ins < old_n && node->keys[ins] < key)
+		ins++;
+
+	for (i = 0; i < ins; i++) {
+		tmp_keys[i] = node->keys[i];
+	}
+	tmp_keys[ins] = key;
+	for (i = ins; i < old_n; i++) {
+		tmp_keys[i + 1] = node->keys[i];
+	}
+
+	for (i = 0; i <= ins; i++) {
+		tmp_children[i] = node->u.children[i];
+	}
+	tmp_children[ins + 1] = child;
+	for (i = ins + 1; i <= old_n; i++) {
+		tmp_children[i + 1] = node->u.children[i];
+	}
+
+	new_node = bptree_new_node(root, 0);
+	if (!new_node)
+		return -1;
+
+	/* 9 keys -> 提升中间 key[4]；左 4 keys，右 4 keys */
+	mid = (BPTREE_MAX_KEYS + 1) / 2;
+	*promote_key_out = tmp_keys[mid];
+
+	node->num_keys = mid;
+	for (i = 0; i < node->num_keys; i++) {
+		node->keys[i] = tmp_keys[i];
+		node->u.children[i] = tmp_children[i];
+	}
+	node->u.children[node->num_keys] = tmp_children[node->num_keys];
+	for (; i < BPTREE_MAX_KEYS; i++) {
+		node->keys[i] = 0;
+		node->u.children[i + 1] = (struct bptree_node *)0;
+	}
+
+	right_n = (BPTREE_MAX_KEYS + 1) - mid - 1;
+	new_node->num_keys = right_n;
+	for (i = 0; i < right_n; i++) {
+		new_node->keys[i] = tmp_keys[mid + 1 + i];
+		new_node->u.children[i] = tmp_children[mid + 1 + i];
+	}
+	new_node->u.children[right_n] = tmp_children[mid + 1 + right_n];
+
+	*new_node_out = new_node;
+	return 0;
 }
 
 /* 分裂叶子结点：
@@ -236,16 +377,8 @@ static int bptree_insert_recursive(struct bptree_root *root,
 			*new_child = (struct bptree_node *)0;
 			return 0;
 		} else {
-			/* 先插入到一个临时数组，再分裂 */
-			bptree_leaf_insert_nosplit(node, key, value);
-			if (node->num_keys <= BPTREE_MAX_KEYS) {
-				/* 插入时刚好覆盖原有 key 的情况（更新），不需要分裂 */
-				*new_child = (struct bptree_node *)0;
-				return 0;
-			}
-			/* 真正进行分裂 */
-			*new_key = bptree_split_leaf(root, node, new_child);
-			if (!*new_child)
+			/* 满结点插入必须走 split 辅助，避免对 keys[8] 越界写。 */
+			if (bptree_leaf_insert_split(root, node, key, value, new_child, new_key) < 0)
 				return -1;
 			return 0;
 		}
@@ -284,10 +417,8 @@ static int bptree_insert_recursive(struct bptree_root *root,
 			*new_child = (struct bptree_node *)0;
 			return 0;
 		} else {
-			/* 当前内部结点已满，需要分裂 */
-			bptree_internal_insert_nosplit(node, child_key, child_new);
-			*new_key = bptree_split_internal(root, node, new_child);
-			if (!*new_child)
+			/* 当前内部结点已满，走 split 辅助避免 children/keys 越界写。 */
+			if (bptree_internal_insert_split(root, node, child_key, child_new, new_child, new_key) < 0)
 				return -1;
 			return 0;
 		}

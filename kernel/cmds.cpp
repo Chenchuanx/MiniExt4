@@ -536,7 +536,7 @@ static void cmd_test_fill(const int8_t *arg) {
 	int switched_perf = 0;
 
 	if (!arg) {
-		sysPrintf((int8_t *)"test_fill: 用法: test_fill PATH BYTES\n");
+		sysPrintf((int8_t *)"test_fill: 用法: test_fill <路径> <字节数>\n");
 		return;
 	}
 
@@ -721,7 +721,7 @@ static void cmd_ext4_mode(const int8_t *arg) {
 
 static void cmd_test_read(const int8_t *arg) {
 	if (!arg) {
-		sysPrintf((int8_t *)"test_read: 用法: test_read PATH\n");
+		sysPrintf((int8_t *)"test_read: 用法: test_read <路径>\n");
 		return;
 	}
 
@@ -888,7 +888,7 @@ static int build_churn_path(char *out, int out_sz, const char *dir, uint32_t idx
 static void cmd_test_churn(const int8_t *arg)
 {
 	if (!arg) {
-		sysPrintf((int8_t *)"test_churn: 用法: test_churn DIR ROUNDS FILES_PER_ROUND FILE_SIZE\n");
+		sysPrintf((int8_t *)"test_churn: 用法: test_churn <路径> <轮次> <每轮文件数> <文件大小>\n");
 		return;
 	}
 
@@ -1022,7 +1022,7 @@ static void cmd_test_churn(const int8_t *arg)
 			}
 
 			struct kstat st;
-			int sret = sysStat(path, &st);
+			int sret = vfs_stat(path, &st);
 			if (sret != -ENOENT) {
 				verify_fail++;
 				if (first_err == 0) {
@@ -1389,14 +1389,14 @@ const struct cmd_entry cmd_table[] = {
 	{"touch", cmd_touch, "创建空文件（不存在时）"},
 	{"echo", cmd_echo, "输出文本；支持 > 重定向到文件"},
 	{"cat", cmd_cat, "显示文件内容"},
-	{"find", cmd_find, "递归查找: find [PATH] [-name PATTERN]"},
+	{"find", cmd_find, "递归查找: find <路径> [-name <模式>]"},
 	{"rm", cmd_rm, "删除文件"},
 	{"rmdir", cmd_rmdir, "删除空目录"},
 	{"ext4_mode", cmd_ext4_mode, "切换 ext4 调优模式: safe|perf"},
 	{0, 0, 0},
 	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},
 	{"test_read", cmd_test_read, "性能测试: test_read <路径>"},
-	{"test_churn", cmd_test_churn, "抖动测试: test_churn DIR ROUNDS FILES_PER_ROUND FILE_SIZE"},
+	{"test_churn", cmd_test_churn, "抖动测试: test_churn <路径> <轮次> <每轮文件数> <文件大小>"},
 	{0, 0, 0},
 };
 
