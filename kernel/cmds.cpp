@@ -7,6 +7,7 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/fs.h>
+#include <fs/ext4/ext4.h>
 #include <lib/time.h>
 
 /*
@@ -529,6 +530,11 @@ static int parse_u64_10(const char *s, uint64_t *out)
 }
 
 static void cmd_test_fill(const int8_t *arg) {
+	struct super_block *root_sb = vfs_get_root_sb();
+	uint32_t prev_prealloc = 0;
+	uint32_t prev_sync_batch = 0;
+	int switched_perf = 0;
+
 	if (!arg) {
 		sysPrintf((int8_t *)"test_fill: 用法: test_fill PATH BYTES\n");
 		return;
@@ -565,6 +571,14 @@ static void cmd_test_fill(const int8_t *arg) {
 		return;
 	}
 
+	if (root_sb && root_sb->s_magic == EXT4_SUPER_MAGIC) {
+		prev_prealloc = ext4_get_prealloc_goal_len();
+		prev_sync_batch = ext4_get_bg_sync_batch();
+		ext4_set_prealloc_goal_len(EXT4_TUNING_PERF_PREALLOC_GOAL_LEN);
+		ext4_set_bg_sync_batch(EXT4_TUNING_PERF_BG_SYNC_BATCH);
+		switched_perf = 1;
+	}
+
 	int fd = vfs_open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
 	if (fd < 0) {
 		sysPrintf((int8_t *)"test_fill: ");
@@ -578,6 +592,10 @@ static void cmd_test_fill(const int8_t *arg) {
 			sysPrintf((int8_t *)"失败，错误码=");
 			print_errno_value(fd);
 			sysPrintf((int8_t *)"\n");
+		}
+		if (switched_perf) {
+			ext4_set_prealloc_goal_len(prev_prealloc);
+			ext4_set_bg_sync_batch(prev_sync_batch);
 		}
 		return;
 	}
@@ -615,6 +633,12 @@ static void cmd_test_fill(const int8_t *arg) {
 			sysPrintf((int8_t *)wrote_buf);
 			sysPrintf((int8_t *)" 字节\n");
 			vfs_close(fd);
+			if (switched_perf && root_sb && root_sb->s_magic == EXT4_SUPER_MAGIC) {
+				(void)ext4_balloc_flush(root_sb);
+				(void)ext4_sync_super_free_counts(root_sb);
+				ext4_set_prealloc_goal_len(prev_prealloc);
+				ext4_set_bg_sync_batch(prev_sync_batch);
+			}
 			return;
 		}
 		if (w == 0) {
@@ -629,6 +653,12 @@ static void cmd_test_fill(const int8_t *arg) {
 			sysPrintf((int8_t *)wrote_buf);
 			sysPrintf((int8_t *)" 字节\n");
 			vfs_close(fd);
+			if (switched_perf && root_sb && root_sb->s_magic == EXT4_SUPER_MAGIC) {
+				(void)ext4_balloc_flush(root_sb);
+				(void)ext4_sync_super_free_counts(root_sb);
+				ext4_set_prealloc_goal_len(prev_prealloc);
+				ext4_set_bg_sync_batch(prev_sync_batch);
+			}
 			return;
 		}
 
@@ -648,7 +678,45 @@ static void cmd_test_fill(const int8_t *arg) {
 	sysPrintf((int8_t *)"ms\n");
 
 	vfs_close(fd);
+
+	if (switched_perf && root_sb && root_sb->s_magic == EXT4_SUPER_MAGIC) {
+		(void)ext4_balloc_flush(root_sb);
+		(void)ext4_sync_super_free_counts(root_sb);
+		ext4_set_prealloc_goal_len(prev_prealloc);
+		ext4_set_bg_sync_batch(prev_sync_batch);
+	}
 	sysPrintf((int8_t *)"test_fill: 完成\n");
+}
+
+static void cmd_ext4_mode(const int8_t *arg) {
+	if (!arg || arg[0] == '\0') {
+		sysPrintf((int8_t *)"ext4_mode: 当前 prealloc=");
+		char num[16];
+		u32_to_dec(num, sizeof(num), ext4_get_prealloc_goal_len());
+		sysPrintf((int8_t *)num);
+		sysPrintf((int8_t *)", sync_batch=");
+		u32_to_dec(num, sizeof(num), ext4_get_bg_sync_batch());
+		sysPrintf((int8_t *)num);
+		sysPrintf((int8_t *)"\n");
+		sysPrintf((int8_t *)"用法: ext4_mode safe|perf\n");
+		return;
+	}
+
+	if (strcmp((const int8_t *)arg, (const int8_t *)"safe") == 0) {
+		ext4_set_prealloc_goal_len(EXT4_TUNING_SAFE_PREALLOC_GOAL_LEN);
+		ext4_set_bg_sync_batch(EXT4_TUNING_SAFE_BG_SYNC_BATCH);
+		sysPrintf((int8_t *)"ext4_mode: 已切换到 safe\n");
+		return;
+	}
+
+	if (strcmp((const int8_t *)arg, (const int8_t *)"perf") == 0) {
+		ext4_set_prealloc_goal_len(EXT4_TUNING_PERF_PREALLOC_GOAL_LEN);
+		ext4_set_bg_sync_batch(EXT4_TUNING_PERF_BG_SYNC_BATCH);
+		sysPrintf((int8_t *)"ext4_mode: 已切换到 perf\n");
+		return;
+	}
+
+	sysPrintf((int8_t *)"ext4_mode: 仅支持 safe|perf\n");
 }
 
 static void cmd_test_read(const int8_t *arg) {
@@ -1098,6 +1166,7 @@ const struct cmd_entry cmd_table[] = {
 	{"find", cmd_find, "递归查找: find [PATH] [-name PATTERN]"},
 	{"rm", cmd_rm, "删除文件"},
 	{"rmdir", cmd_rmdir, "删除空目录"},
+	{"ext4_mode", cmd_ext4_mode, "切换 ext4 调优模式: safe|perf"},
 	{0, 0, 0},
 	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},
 	{"test_read", cmd_test_read, "性能测试: test_read <路径>"},

@@ -85,9 +85,23 @@ static void simple_free(void *ptr)
 #define malloc simple_malloc
 #define free simple_free
 
-#define EXT4_PREALLOC_GOAL_LEN 32U
+/* 运行时可调，默认使用 safe 模式。 */
+static uint32_t ext4_prealloc_goal_len = EXT4_TUNING_SAFE_PREALLOC_GOAL_LEN;
 #define EXT4_EXT_MAX_DEPTH 5
 #define EXT4_EXT_INIT_MAX_LEN 0x7fffU
+
+uint32_t ext4_get_prealloc_goal_len(void)
+{
+	return ext4_prealloc_goal_len;
+}
+
+void ext4_set_prealloc_goal_len(uint32_t goal_len)
+{
+	if (goal_len == 0) {
+		goal_len = 1;
+	}
+	ext4_prealloc_goal_len = goal_len;
+}
 
 struct ext4_ext_path {
 	struct ext4_extent_header *eh;
@@ -504,7 +518,8 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 				preferred_group = ei->i_alloc_group_hint;
 			}
 			uint32_t alloc_len = 1;
-			uint32_t new_block = ext4_new_blocks_in_group(sb, EXT4_PREALLOC_GOAL_LEN,
+			uint32_t goal_len = ext4_get_prealloc_goal_len();
+			uint32_t new_block = ext4_new_blocks_in_group(sb, goal_len,
 							       &alloc_len, preferred_group);
 			struct ext4_extent new_ex;
 			struct ext4_extent_header *cur_leaf = path[depth].eh;

@@ -322,8 +322,23 @@ static int ext4_get_data_block(struct inode *inode, uint32_t lblock,
 
 static int ext4_file_open(struct inode *inode, struct file *file)
 {
+	int accmode;
 	file->f_inode = inode;
 	file->f_pos = 0;
+	/* O_TRUNC 语义：仅在可写打开普通文件时生效。 */
+	if (!inode || !S_ISREG(inode->i_mode)) {
+		return 0;
+	}
+	accmode = file->f_flags & 0x3;
+	if ((file->f_flags & O_TRUNC) && accmode != O_RDONLY) {
+		ext4_free_inode_data_blocks(inode);
+		inode->i_state |= I_DIRTY;
+		if (inode->i_sb && inode->i_sb->s_op && inode->i_sb->s_op->write_inode) {
+			if (inode->i_sb->s_op->write_inode(inode, NULL) == 0) {
+				inode->i_state &= ~I_DIRTY;
+			}
+		}
+	}
 	return 0;
 }
 

@@ -619,34 +619,40 @@ int ext4_add_entry(struct inode *dir, const struct qstr *name, unsigned long ino
 			uint16_t d_rec_len = le16_to_cpu(de->rec_len);
 			uint16_t d_name_len = (uint16_t)de->name_len;
 			uint32_t d_ino = le32_to_cpu(de->inode);
+			uint16_t used_len = 0;
 
-			if (d_rec_len == 0) {
+			if (d_rec_len == 0 || (d_rec_len & 3) != 0 || off + d_rec_len > block_size) {
 				free(buf);
 				return -1;
 			}
-			if (d_ino == 0 || d_rec_len >= (uint16_t)(rec_len + (d_name_len <= 0 ? 0 : EXT4_DIR_REC_LEN((int)d_name_len)))) {
-				uint16_t old_rec = d_rec_len;
-				if (d_ino != 0 && old_rec > rec_len) {
-					de->rec_len = (uint16_t)rec_len;
-					de = (struct ext4_dir_entry *)((char *)de + rec_len);
-					de->inode = (uint32_t)ino;
-					de->rec_len = (uint16_t)(old_rec - rec_len);
-					de->name_len = (__u8)name->len;
-					de->file_type = 0;
-					if (name->name && name->len > 0)
-						memcpy(de->name, name->name, (size_t)name->len);
-				} else {
-					de->inode = (uint32_t)ino;
-					de->rec_len = old_rec;
-					de->name_len = (__u8)name->len;
-					de->file_type = 0;
-					if (name->name && name->len > 0)
-						memcpy(de->name, name->name, (size_t)name->len);
+			if (d_ino != 0) {
+				used_len = EXT4_DIR_REC_LEN((int)d_name_len);
+				if (used_len > d_rec_len) {
+					free(buf);
+					return -1;
 				}
+			}
+
+			if (d_rec_len >= (uint16_t)(used_len + rec_len)) {
+				struct ext4_dir_entry *new_de;
+				uint16_t old_rec = d_rec_len;
+				if (d_ino != 0) {
+					de->rec_len = used_len;
+					new_de = (struct ext4_dir_entry *)((char *)de + used_len);
+					new_de->rec_len = (uint16_t)(old_rec - used_len);
+				} else {
+					new_de = de;
+					new_de->rec_len = old_rec;
+				}
+				new_de->inode = (uint32_t)ino;
+				new_de->name_len = (__u8)name->len;
+				new_de->file_type = 0;
+				if (name->name && name->len > 0)
+					memcpy(new_de->name, name->name, (size_t)name->len);
 				ret = ext4_write_block(blocknr, buf);
 				if (ret >= 0) {
 					ext4_dir_index_add(dir, name, blocknr,
-							   (uint32_t)((char *)de - buf));
+							   (uint32_t)((char *)new_de - buf));
 				}
 				free(buf);
 				return ret < 0 ? -1 : 0;

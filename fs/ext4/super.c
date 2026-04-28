@@ -281,7 +281,8 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
      * - 启用 EXTENTS，使宿主 Linux 按 extents 模式解析普通文件的 i_block
      */
     esb->s_feature_compat = EXT4_FEATURE_COMPAT_DIR_INDEX;
-    esb->s_feature_incompat = EXT4_FEATURE_INCOMPAT_EXTENTS;
+    esb->s_feature_incompat = EXT4_FEATURE_INCOMPAT_FILETYPE |
+                              EXT4_FEATURE_INCOMPAT_EXTENTS;
     esb->s_feature_ro_compat = 0;
     esb->s_mkfs_time = now;  /* mkfs 时间 */
     esb->s_journal_inum = 0;  /* 无日志 */
@@ -391,7 +392,8 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
         }
         free_blocks_group = group_blocks - used_blocks;
         free_inodes_group = (g == 0) ? (inodes_per_group - 10) : inodes_per_group;
-        itable_unused_group = free_inodes_group;
+        /* 当前实现不会维护“inode table 尾部未初始化”语义，保持为 0 更稳妥。 */
+        itable_unused_group = 0;
         used_dirs_group = (g == 0) ? 1 : 0;
 
         gd_cur->bg_block_bitmap_lo = block_bitmap_abs;
@@ -470,6 +472,14 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
                 uint32_t byte = (uint32_t)i / 8;
                 uint32_t bit = (uint32_t)i % 8;
                 buf[byte] |= (1 << bit);
+            }
+        }
+        /* inode bitmap 尾部无效位必须置 1，避免 e2fsck 报 padding 错误。 */
+        for (uint32_t i = inodes_per_group; i < block_size * 8; i++) {
+            uint32_t byte = i / 8;
+            uint32_t bit = i % 8;
+            if (byte < block_size) {
+                buf[byte] |= (1U << bit);
             }
         }
         ret = ext4_write_block(inode_bitmap_abs, buf);
@@ -808,10 +818,12 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         if (sbi->s_group_desc->bg_free_inodes_count_lo == 0) {
             if (sbi->s_inodes_per_group > 10) {
                 sbi->s_group_desc->bg_free_inodes_count_lo = (uint16_t)(sbi->s_inodes_per_group - 10);
-                sbi->s_group_desc->bg_itable_unused_lo = (uint16_t)(sbi->s_inodes_per_group - 10);
+                sbi->s_group_desc->bg_itable_unused_lo = 0;
+                sbi->s_group_desc->bg_itable_unused_hi = 0;
             } else {
                 sbi->s_group_desc->bg_free_inodes_count_lo = 1;
-                sbi->s_group_desc->bg_itable_unused_lo = 1;
+                sbi->s_group_desc->bg_itable_unused_lo = 0;
+                sbi->s_group_desc->bg_itable_unused_hi = 0;
             }
             sbi->s_group_desc->bg_used_dirs_count_lo = 1;
         }
@@ -984,10 +996,16 @@ int ext4_sync_super_free_counts(struct super_block *sb)
 {
 	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
 	struct ext4_super_block *esb;
-	char *buf;
+	struct ext4_group_desc gd;
+	char *sb_buf;
+	char *gd_buf;
 	uint32_t block_size;
-	uint32_t free_blocks;
+	uint32_t gd_base;
 	uint32_t free_inodes;
+	uint64_t free_blocks64;
+	uint32_t free_blocks_lo;
+	uint32_t free_blocks_hi;
+	uint32_t cur_gd_block = (uint32_t)-1;
 	int ret;
 
 	if (!sbi || !sbi->s_group_desc) {
@@ -995,29 +1013,73 @@ int ext4_sync_super_free_counts(struct super_block *sb)
 	}
 
 	block_size = sbi->s_block_size;
-	buf = (char *)malloc(block_size);
-	if (!buf) {
+	sb_buf = (char *)malloc(block_size);
+	if (!sb_buf) {
+		return -1;
+	}
+	gd_buf = (char *)malloc(block_size);
+	if (!gd_buf) {
+		free(sb_buf);
 		return -1;
 	}
 
-	ret = ext4_read_block(0, buf);
+	ret = ext4_read_block(0, sb_buf);
 	if (ret < 0) {
-		free(buf);
+		free(gd_buf);
+		free(sb_buf);
 		return -1;
 	}
 
-	esb = (struct ext4_super_block *)(buf + 1024);
-	free_blocks = (uint32_t)sbi->s_group_desc->bg_free_blocks_count_lo |
-		      ((uint32_t)sbi->s_group_desc->bg_free_blocks_count_hi << 16);
-	free_inodes = (uint32_t)sbi->s_group_desc->bg_free_inodes_count_lo |
-		      ((uint32_t)sbi->s_group_desc->bg_free_inodes_count_hi << 16);
+	esb = (struct ext4_super_block *)(sb_buf + 1024);
+	free_blocks64 = 0;
+	free_inodes = 0;
+	gd_base = sbi->s_first_data_block + 1;
+	if (block_size == 1024) {
+		gd_base = 2;
+	}
+	for (uint32_t g = 0; g < sbi->s_groups_count; g++) {
+		uint32_t desc_off = g * (uint32_t)sbi->s_desc_size;
+		uint32_t blk = gd_base + (desc_off / block_size);
+		uint32_t off = desc_off % block_size;
+		uint32_t copy_sz = (uint32_t)sbi->s_desc_size;
+		uint32_t fb;
+		uint32_t fi;
 
-	esb->s_free_blocks_count_lo = free_blocks;
-	esb->s_free_blocks_count_hi = 0;
+		if (copy_sz > sizeof(struct ext4_group_desc)) {
+			copy_sz = sizeof(struct ext4_group_desc);
+		}
+		if (off + copy_sz > block_size) {
+			continue;
+		}
+		if (blk != cur_gd_block) {
+			ret = ext4_read_block(blk, gd_buf);
+			if (ret < 0) {
+				free(gd_buf);
+				free(sb_buf);
+				return -1;
+			}
+			cur_gd_block = blk;
+		}
+
+		memset(&gd, 0, sizeof(gd));
+		memcpy(&gd, gd_buf + off, copy_sz);
+		fb = (uint32_t)gd.bg_free_blocks_count_lo |
+		     ((uint32_t)gd.bg_free_blocks_count_hi << 16);
+		fi = (uint32_t)gd.bg_free_inodes_count_lo |
+		     ((uint32_t)gd.bg_free_inodes_count_hi << 16);
+		free_blocks64 += (uint64_t)fb;
+		free_inodes += fi;
+	}
+
+	free_blocks_lo = (uint32_t)(free_blocks64 & 0xffffffffULL);
+	free_blocks_hi = (uint32_t)(free_blocks64 >> 32);
+	esb->s_free_blocks_count_lo = free_blocks_lo;
+	esb->s_free_blocks_count_hi = free_blocks_hi;
 	esb->s_free_inodes_count = free_inodes;
 
-	ret = ext4_write_block(0, buf);
-	free(buf);
+	ret = ext4_write_block(0, sb_buf);
+	free(gd_buf);
+	free(sb_buf);
 	return ret < 0 ? -1 : 0;
 }
 

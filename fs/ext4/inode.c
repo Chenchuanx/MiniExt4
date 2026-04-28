@@ -233,7 +233,7 @@ static void ext4_free_legacy_data_blocks(struct inode *inode, struct ext4_inode_
 	}
 }
 
-static void ext4_free_inode_data_blocks(struct inode *inode)
+void ext4_free_inode_data_blocks(struct inode *inode)
 {
 	struct ext4_inode_info *ei;
 	struct ext4_extent_header *eh;
@@ -457,6 +457,11 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (sbi && dir->i_sb && dir->i_sb->s_op && dir->i_sb->s_op->write_inode) {
 		dir->i_sb->s_op->write_inode(dir, NULL);
 	}
+	if (sbi && sbi->s_group_desc) {
+		uint32_t g = ext4_inode_group_of_ino(sb, (uint32_t)ino);
+		sbi->s_group_desc->bg_used_dirs_count_lo++;
+		(void)ext4_write_group_desc_cached(sb, g);
+	}
 	return 0;
 }
 
@@ -477,6 +482,11 @@ static int ext4_unlink(struct inode *dir, struct dentry *dentry)
 	inode->i_nlink--;
 	if (inode->i_nlink == 0) {
 		ext4_free_inode_data_blocks(inode);
+
+		inode->i_mode = 0;
+		inode->i_size = 0;
+		inode->i_blocks = 0;
+		(void)sb->s_op->write_inode(inode, NULL);
 		(void)ext4_free_inode(sb, (uint32_t)inode->i_ino);
 	} else {
 		sb->s_op->write_inode(inode, NULL);
@@ -519,8 +529,21 @@ static int ext4_rmdir(struct inode *dir, struct dentry *dentry)
 	inode->i_nlink -= 2; /* 原为 2（. 和 ..） */
 	dir->i_nlink--;
 	ext4_free_inode_data_blocks(inode);
+	/* 同 unlink：先将 inode 内容落盘为 deleted，再清位图。 */
+	inode->i_mode = 0;
+	inode->i_size = 0;
+	inode->i_blocks = 0;
+	(void)sb->s_op->write_inode(inode, NULL);
 	(void)ext4_free_inode(sb, (uint32_t)inode->i_ino);
 	sb->s_op->write_inode(dir, NULL);
+	{
+		struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+		uint32_t g = ext4_inode_group_of_ino(sb, (uint32_t)inode->i_ino);
+		if (sbi && sbi->s_group_desc && sbi->s_group_desc->bg_used_dirs_count_lo > 0) {
+			sbi->s_group_desc->bg_used_dirs_count_lo--;
+			(void)ext4_write_group_desc_cached(sb, g);
+		}
+	}
 	return 0;
 }
 

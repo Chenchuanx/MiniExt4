@@ -223,7 +223,21 @@ static int ext4_update_group_desc(struct super_block *sb, uint32_t group)
 	return ret;
 }
 
-#define EXT4_BG_SYNC_BATCH 64U
+/* 运行时可调，默认使用 safe 模式。 */
+static uint32_t ext4_bg_sync_batch = EXT4_TUNING_SAFE_BG_SYNC_BATCH;
+
+uint32_t ext4_get_bg_sync_batch(void)
+{
+	return ext4_bg_sync_batch;
+}
+
+void ext4_set_bg_sync_batch(uint32_t batch)
+{
+	if (batch == 0) {
+		batch = 1;
+	}
+	ext4_bg_sync_batch = batch;
+}
 
 static int ext4_bmap_cache_flush(struct super_block *sb, struct ext4_sb_info *sbi)
 {
@@ -501,9 +515,9 @@ uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
 			}
 		}
 
-		/* Linux 类似的延迟统计更新：批量同步 super free count */
+		/* Linux 类似的延迟统计更新：按运行时参数批量同步 super free count */
 		sbi->s_bg_sync_pending++;
-		if (sbi->s_bg_sync_pending >= EXT4_BG_SYNC_BATCH) {
+		if (sbi->s_bg_sync_pending >= ext4_get_bg_sync_batch()) {
 			(void)ext4_sync_super_free_counts(sb);
 			sbi->s_bg_sync_pending = 0;
 		}
@@ -618,7 +632,7 @@ int ext4_free_block(struct super_block *sb, uint32_t blocknr)
 	if (group == 0) *sbi->s_group_desc = gd_local;
 
 	sbi->s_bg_sync_pending++;
-	if (sbi->s_bg_sync_pending >= EXT4_BG_SYNC_BATCH) {
+	if (sbi->s_bg_sync_pending >= ext4_get_bg_sync_batch()) {
 		(void)ext4_sync_super_free_counts(sb);
 		sbi->s_bg_sync_pending = 0;
 	}

@@ -141,8 +141,12 @@ static int ext4_write_inode_bitmap(struct super_block *sb,
 static int ext4_update_group_desc_inode(struct super_block *sb, uint32_t group)
 {
 	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
-	uint32_t group_desc_block;
+	uint32_t gd_base;
+	uint32_t desc_off;
+	uint32_t blocknr;
+	uint32_t off_in_block;
 	uint32_t block_size = ext4_get_block_size();
+	uint32_t copy_sz;
 	char *buf;
 	int ret;
 
@@ -150,8 +154,10 @@ static int ext4_update_group_desc_inode(struct super_block *sb, uint32_t group)
 		return -1;
 	}
 
-	/* 简化版：只支持第 0 块组 */
-	if (group != 0) {
+	if (sbi->s_desc_size == 0 || sbi->s_desc_size > block_size) {
+		return -1;
+	}
+	if (group >= sbi->s_groups_count) {
 		return -1;
 	}
 
@@ -160,36 +166,44 @@ static int ext4_update_group_desc_inode(struct super_block *sb, uint32_t group)
 		return -1;
 	}
 
-	/* 计算组描述符所在块号（与 ext4_mkfs / ext4_fill_super 保持一致） */
-	group_desc_block = sbi->s_first_data_block + 1;
+	/* 计算 group 对应描述符在 GDT 中的位置 */
+	gd_base = sbi->s_first_data_block + 1;
 	if (block_size == 1024) {
-		group_desc_block = 2;
+		gd_base = 2;
+	}
+	desc_off = group * (uint32_t)sbi->s_desc_size;
+	blocknr = gd_base + (desc_off / block_size);
+	off_in_block = desc_off % block_size;
+
+	copy_sz = sbi->s_desc_size;
+	if (copy_sz > sizeof(struct ext4_group_desc)) {
+		copy_sz = sizeof(struct ext4_group_desc);
+	}
+	if (off_in_block + copy_sz > block_size) {
+		free(buf);
+		return -1;
 	}
 
-	/* 读取原始组描述符块 */
-	ret = ext4_read_block(group_desc_block, buf);
+	ret = ext4_read_block(blocknr, buf);
 	if (ret < 0) {
 		free(buf);
 		return -1;
 	}
 
-	/* 用内存中的组描述符覆盖第一个描述符（仅写回 s_desc_size 字节） */
-	if (sbi->s_desc_size == 0 || sbi->s_desc_size > block_size) {
-		free(buf);
-		return -1;
-	}
-	{
-		uint32_t copy_sz = sbi->s_desc_size;
-		if (copy_sz > sizeof(struct ext4_group_desc)) {
-			copy_sz = sizeof(struct ext4_group_desc);
-		}
-		memcpy(buf, sbi->s_group_desc, copy_sz);
-	}
+	/* 当前实现不维护 inode table 尾部未初始化语义，固定清零。 */
+	sbi->s_group_desc->bg_itable_unused_lo = 0;
+	sbi->s_group_desc->bg_itable_unused_hi = 0;
 
-	/* 写回磁盘 */
-	ret = ext4_write_block(group_desc_block, buf);
+	memcpy(buf + off_in_block, sbi->s_group_desc, copy_sz);
+
+	ret = ext4_write_block(blocknr, buf);
 	free(buf);
 	return ret;
+}
+
+int ext4_write_group_desc_cached(struct super_block *sb, uint32_t group)
+{
+	return ext4_update_group_desc_inode(sb, group);
 }
 
 /**
@@ -275,6 +289,8 @@ uint32_t ext4_new_inode_in_group(struct super_block *sb, uint32_t preferred_grou
 	if (sbi->s_group_desc->bg_free_inodes_count_lo > 0) {
 		sbi->s_group_desc->bg_free_inodes_count_lo--;
 	}
+	sbi->s_group_desc->bg_itable_unused_lo = 0;
+	sbi->s_group_desc->bg_itable_unused_hi = 0;
 
 	/* 写回组描述符 */
 	ret = ext4_update_group_desc_inode(sb, 0);
@@ -377,6 +393,8 @@ int ext4_free_inode(struct super_block *sb, uint32_t ino)
 
 	/* 更新组描述符中的空闲 inode 计数 */
 	sbi->s_group_desc->bg_free_inodes_count_lo++;
+	sbi->s_group_desc->bg_itable_unused_lo = 0;
+	sbi->s_group_desc->bg_itable_unused_hi = 0;
 
 	/* 写回组描述符 */
 	ret = ext4_update_group_desc_inode(sb, group);

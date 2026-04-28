@@ -8,6 +8,10 @@
 #include <linux/types.h>
 #include <linux/fs.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Ext4 魔数 */
 #define EXT4_SUPER_MAGIC 0xEF53
 
@@ -197,7 +201,14 @@ struct ext4_inode {
 #define EXT4_FEATURE_COMPAT_DIR_INDEX 0x00000020U
 
 /* 不兼容特性标志（仅使用 EXTENTS，用于让宿主 Linux 识别 extents 模式） */
+#define EXT4_FEATURE_INCOMPAT_FILETYPE 0x00000002U
 #define EXT4_FEATURE_INCOMPAT_EXTENTS 0x00000040U
+
+/* MiniExt4 运行时调优默认值（safe/perf 双模式） */
+#define EXT4_TUNING_SAFE_PREALLOC_GOAL_LEN 1U
+#define EXT4_TUNING_PERF_PREALLOC_GOAL_LEN 32U
+#define EXT4_TUNING_SAFE_BG_SYNC_BATCH 1U
+#define EXT4_TUNING_PERF_BG_SYNC_BATCH 64U
 
 /* === 目录 HTree on-disk 结构（对齐 Linux fs/ext4/htree.h） === */
 
@@ -364,11 +375,18 @@ uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
 				  uint32_t *out_len, uint32_t preferred_group);
 int ext4_free_block(struct super_block *sb, uint32_t blocknr);
 int ext4_balloc_flush(struct super_block *sb);
+uint32_t ext4_get_bg_sync_batch(void);
+void ext4_set_bg_sync_batch(uint32_t batch);
 
 /* Inode 分配和释放 */
 uint32_t ext4_new_inode(struct super_block *sb);
 uint32_t ext4_new_inode_in_group(struct super_block *sb, uint32_t preferred_group);
 int ext4_free_inode(struct super_block *sb, uint32_t ino);
+int ext4_write_group_desc_cached(struct super_block *sb, uint32_t group);
+void ext4_free_inode_data_blocks(struct inode *inode);
+
+uint32_t ext4_get_prealloc_goal_len(void);
+void ext4_set_prealloc_goal_len(uint32_t goal_len);
 
 /* 将块组描述符中的空闲块/inode 计数写回磁盘超级块（单块组镜像与 Linux 一致） */
 int ext4_sync_super_free_counts(struct super_block *sb);
@@ -395,6 +413,10 @@ extern const struct file_operations ext4_dir_operations;
 
 /* Ext4 文件系统类型（外部声明） */
 extern struct file_system_type ext4_fs_type;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _EXT4_H */
 
