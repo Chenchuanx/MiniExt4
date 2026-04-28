@@ -398,6 +398,80 @@ int vfs_unlink(const char *path)
 	return 0;
 }
 
+/**
+ * vfs_rmdir - 删除空目录
+ *
+ * 路径规则同 vfs_mkdir/vfs_chdir：
+ *   - 以 '/' 开头：从根目录解析
+ *   - 否则：       从当前工作目录解析
+ */
+int vfs_rmdir(const char *path)
+{
+	struct super_block *sb;
+	struct dentry *root;
+	struct dentry *cwd;
+	struct dentry *target;
+	struct dentry *parent;
+
+	if (!path || path[0] == '\0') {
+		return -EINVAL;
+	}
+
+	sb = vfs_get_root_sb();
+	if (!sb || !sb->s_root || !sb->s_root->d_inode) {
+		return -ENODEV;
+	}
+	root = sb->s_root;
+	cwd  = vfs_get_cwd_dentry();
+	if (!cwd) {
+		return -EINVAL;
+	}
+
+	if (path[0] == '/') {
+		target = vfs_lookup_root(sb, path);
+		if (!target) {
+			return -ENOENT;
+		}
+	} else {
+		target = vfs_path_lookup(cwd, path);
+		if (!target) {
+			return -ENOENT;
+		}
+	}
+
+	if (!target->d_inode) {
+		return -ENOENT;
+	}
+
+	/* 只能删除目录 */
+	if (!S_ISDIR(target->d_inode->i_mode)) {
+		return -ENOTDIR;
+	}
+
+	/* 防止删除根目录和当前工作目录 */
+	if (target == root || target == cwd) {
+		return -EBUSY;
+	}
+
+	parent = target->d_parent;
+	if (!parent || !parent->d_inode || !parent->d_inode->i_op ||
+	    !parent->d_inode->i_op->rmdir) {
+		return -EINVAL;
+	}
+
+	{
+		int rr = parent->d_inode->i_op->rmdir(parent->d_inode, target);
+		if (rr != 0) {
+			if (rr < 0) {
+				return coerce_fs_errno(rr);
+			}
+			return -EIO;
+		}
+	}
+
+	return 0;
+}
+
 /*
  * vfs_stat - 获取文件属性
  *

@@ -4,6 +4,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/errno.h>
 #include <fs/ext4/ext4.h>
 #include <fs/dentry.h>
 #include <lib/printf.h>
@@ -506,14 +507,14 @@ static int ext4_rmdir(struct inode *dir, struct dentry *dentry)
 	int n = 0;
 
 	if (!inode) {
-		return -1;
+		return -ENOENT;
 	}
 	ext4_dir_foreach(inode, &n, count_non_dot_entries);
 	if (n > 0) {
-		return -1; /* 目录非空 */
+		return -ENOTEMPTY; /* 目录非空 */
 	}
 	if (ext4_remove_entry(dir, &dentry->d_name) != 0) {
-		return -1;
+		return -ENOENT;
 	}
 	inode->i_nlink -= 2; /* 原为 2（. 和 ..） */
 	dir->i_nlink--;

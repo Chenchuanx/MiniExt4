@@ -102,6 +102,12 @@ uint32_t SyscallHandler::HandleInterrupt(uint32_t esp)
         cpu->eax = vfs_unlink(path);
         break;
     }
+    case SYS_RMDIR:
+    {
+        const char *path = (const char *)cpu->ebx;
+        cpu->eax = vfs_rmdir(path);
+        break;
+    }
     case SYS_STAT:
     {
         const char *path = (const char *)cpu->ebx;

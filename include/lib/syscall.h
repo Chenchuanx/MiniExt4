@@ -17,6 +17,7 @@ int sysChdir(const int8_t *path);
 int sysFileWrite(int fd, const char *buf, int count);
 int sysFileRead(int fd, char *buf, int count);
 int sysUnlink(const int8_t *path);
+int sysRmdir(const int8_t *path);
 int sysStat(const char *path, struct kstat *st);
 
 #endif

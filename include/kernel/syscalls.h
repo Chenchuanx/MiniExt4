@@ -18,6 +18,7 @@ static const uint32_t SYS_FWRITE   = 8; // 文件系统：向文件写入数据
 static const uint32_t SYS_FREAD    = 9; // 文件系统：从文件读取数据
 static const uint32_t SYS_UNLINK   = 10; // 文件系统：删除普通文件
 static const uint32_t SYS_STAT     = 11; // 文件系统：获取文件属性（stat）
+static const uint32_t SYS_RMDIR    = 12; // 文件系统：删除空目录
 
 class SyscallHandler : public InterruptHandler
 {

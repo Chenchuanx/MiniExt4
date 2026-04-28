@@ -454,11 +454,46 @@ static void cmd_rm(const int8_t *arg) {
 		if (ret == -ENOENT) {
 			sysPrintf((int8_t *)"找不到文件或目录\n");
 		} else if (ret == -EISDIR) {
-			sysPrintf((int8_t *)"无法删除目录\n");
+			sysPrintf((int8_t *)"这是目录，请使用 rmdir 删除空目录\n");
+		} else if (ret == -ENOTDIR) {
+			sysPrintf((int8_t *)"父路径不是目录\n");
+		} else if (ret == -EPERM || ret == -EACCES) {
+			sysPrintf((int8_t *)"权限不足，无法删除\n");
+		} else if (ret == -EBUSY) {
+			sysPrintf((int8_t *)"文件正在使用，无法删除\n");
+		} else if (ret == -EIO) {
+			sysPrintf((int8_t *)"删除失败：底层存储 I/O 错误\n");
 		} else {
-			sysPrintf((int8_t *)"失败，错误码=");
-			print_errno_value(ret);
-			sysPrintf((int8_t *)"\n");
+			sysPrintf((int8_t *)"删除失败\n");
+		}
+	}
+}
+
+static void cmd_rmdir(const int8_t *arg) {
+	if (!arg) {
+		sysPrintf((int8_t *)"rmdir: 缺少参数\n");
+		return;
+	}
+
+	int ret = sysRmdir(arg);
+	if (ret != 0) {
+		sysPrintf((int8_t *)"rmdir: ");
+		sysPrintf((int8_t *)(const char *)arg);
+		sysPrintf((int8_t *)": ");
+		if (ret == -ENOENT) {
+			sysPrintf((int8_t *)"找不到文件或目录\n");
+		} else if (ret == -ENOTDIR) {
+			sysPrintf((int8_t *)"不是目录\n");
+		} else if (ret == -ENOTEMPTY) {
+			sysPrintf((int8_t *)"目录非空，无法删除\n");
+		} else if (ret == -EBUSY) {
+			sysPrintf((int8_t *)"目录正被使用，无法删除\n");
+		} else if (ret == -EPERM || ret == -EACCES) {
+			sysPrintf((int8_t *)"权限不足，无法删除\n");
+		} else if (ret == -EIO) {
+			sysPrintf((int8_t *)"删除失败：底层存储 I/O 错误\n");
+		} else {
+			sysPrintf((int8_t *)"删除失败\n");
 		}
 	}
 }
@@ -614,6 +649,123 @@ static void cmd_test_fill(const int8_t *arg) {
 
 	vfs_close(fd);
 	sysPrintf((int8_t *)"test_fill: 完成\n");
+}
+
+static void cmd_test_read(const int8_t *arg) {
+	if (!arg) {
+		sysPrintf((int8_t *)"test_read: 用法: test_read PATH\n");
+		return;
+	}
+
+	const char *p = (const char *)arg;
+	while (*p == ' ' || *p == '\t') {
+		p++;
+	}
+	if (*p == '\0') {
+		sysPrintf((int8_t *)"test_read: 用法: test_read PATH\n");
+		return;
+	}
+
+	char path[128];
+	int pi = 0;
+	while (*p != '\0' && *p != ' ' && *p != '\t' && pi < (int)sizeof(path) - 1) {
+		path[pi++] = *p++;
+	}
+	path[pi] = '\0';
+
+	struct kstat st;
+	int sret = vfs_stat(path, &st);
+	if (sret != 0) {
+		sysPrintf((int8_t *)"test_read: ");
+		sysPrintf((int8_t *)path);
+		sysPrintf((int8_t *)": ");
+		if (sret == -ENOENT) {
+			sysPrintf((int8_t *)"找不到文件或目录\n");
+		} else if (sret == -ENOTDIR) {
+			sysPrintf((int8_t *)"父路径不是目录\n");
+		} else {
+			sysPrintf((int8_t *)"无法获取文件属性\n");
+		}
+		return;
+	}
+
+	if (S_ISDIR(st.mode)) {
+		sysPrintf((int8_t *)"test_read: 目标是目录，请指定文件路径\n");
+		return;
+	}
+
+	int fd = vfs_open(path, O_RDONLY, 0);
+	if (fd < 0) {
+		sysPrintf((int8_t *)"test_read: ");
+		sysPrintf((int8_t *)path);
+		sysPrintf((int8_t *)": ");
+		if (fd == -ENOENT) {
+			sysPrintf((int8_t *)"找不到文件或目录\n");
+		} else if (fd == -ENOTDIR) {
+			sysPrintf((int8_t *)"父路径不是目录\n");
+		} else {
+			sysPrintf((int8_t *)"无法打开文件\n");
+		}
+		return;
+	}
+
+	uint32_t start_ticks = pit_get_ticks();
+	uint32_t pit_hz = pit_get_frequency_hz();
+	if (pit_hz == 0) {
+		pit_hz = 1000;
+	}
+
+	static const int block_size = 64 * 1024;
+	static char chunk[block_size];
+	uint64_t total_read = 0;
+	uint64_t expected = (uint64_t)st.size;
+	int reached_eof = 0;
+
+	for (;;) {
+		int r = vfs_read(fd, chunk, (size_t)block_size);
+		if (r < 0) {
+			sysPrintf((int8_t *)"test_read: 读取失败（IO 错误）\n");
+			vfs_close(fd);
+			return;
+		}
+		if (r == 0) {
+			reached_eof = 1;
+			break;
+		}
+		total_read += (uint64_t)r;
+	}
+
+	uint32_t end_ticks = pit_get_ticks();
+	uint32_t elapsed_ticks = end_ticks - start_ticks;
+	uint32_t duration_ms = (elapsed_ticks * 1000u) / pit_hz;
+
+	char duration_buf[16];
+	char read_buf[32];
+	char expect_buf[32];
+	u32_to_dec(duration_buf, sizeof(duration_buf), (unsigned long)duration_ms);
+	u64_to_dec(read_buf, sizeof(read_buf), total_read);
+	u64_to_dec(expect_buf, sizeof(expect_buf), expected);
+
+	sysPrintf((int8_t *)"test_read: 耗时 ");
+	sysPrintf((int8_t *)duration_buf);
+	sysPrintf((int8_t *)"ms\n");
+	sysPrintf((int8_t *)"test_read: 已读取 ");
+	sysPrintf((int8_t *)read_buf);
+	sysPrintf((int8_t *)" 字节（预期 ");
+	sysPrintf((int8_t *)expect_buf);
+	sysPrintf((int8_t *)" 字节）\n");
+
+	if (reached_eof && total_read == expected) {
+		sysPrintf((int8_t *)"test_read: 校验通过（已读到 EOF，且字节数匹配）\n");
+	} else if (reached_eof && total_read < expected) {
+		sysPrintf((int8_t *)"test_read: 校验失败（提前 EOF，文件可能不完整）\n");
+	} else if (total_read > expected) {
+		sysPrintf((int8_t *)"test_read: 校验失败（读取字节超过 stat 大小）\n");
+	} else {
+		sysPrintf((int8_t *)"test_read: 校验结果异常\n");
+	}
+
+	vfs_close(fd);
 }
 
 static void cmd_echo(const int8_t *arg) {
@@ -945,8 +1097,10 @@ const struct cmd_entry cmd_table[] = {
 	{"cat", cmd_cat, "显示文件内容"},
 	{"find", cmd_find, "递归查找: find [PATH] [-name PATTERN]"},
 	{"rm", cmd_rm, "删除文件"},
+	{"rmdir", cmd_rmdir, "删除空目录"},
 	{0, 0, 0},
 	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},
+	{"test_read", cmd_test_read, "性能测试: test_read <路径>"},
 	{0, 0, 0},
 };
 
