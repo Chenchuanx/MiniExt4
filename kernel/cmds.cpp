@@ -836,6 +836,232 @@ static void cmd_test_read(const int8_t *arg) {
 	vfs_close(fd);
 }
 
+static int build_churn_path(char *out, int out_sz, const char *dir, uint32_t idx)
+{
+	if (!out || out_sz <= 1 || !dir || dir[0] == '\0') {
+		return -1;
+	}
+
+	int pos = 0;
+	for (const char *p = dir; *p != '\0' && pos < out_sz - 1; ++p) {
+		out[pos++] = *p;
+	}
+	if (pos == out_sz - 1) {
+		out[pos] = '\0';
+		return -1;
+	}
+
+	if (pos > 0 && out[pos - 1] != '/') {
+		out[pos++] = '/';
+		if (pos >= out_sz - 1) {
+			out[out_sz - 1] = '\0';
+			return -1;
+		}
+	}
+
+	out[pos++] = 'f';
+	out[pos++] = '_';
+
+	char ibuf[16];
+	u32_to_dec(ibuf, sizeof(ibuf), (unsigned long)idx);
+	for (int i = 0; ibuf[i] != '\0' && pos < out_sz - 1; i++) {
+		out[pos++] = ibuf[i];
+	}
+	if (pos >= out_sz - 1) {
+		out[out_sz - 1] = '\0';
+		return -1;
+	}
+
+	out[pos++] = '.';
+	out[pos++] = 'd';
+	out[pos++] = 'a';
+	out[pos++] = 't';
+	if (pos >= out_sz) {
+		out[out_sz - 1] = '\0';
+		return -1;
+	}
+
+	out[pos] = '\0';
+	return 0;
+}
+
+static void cmd_test_churn(const int8_t *arg)
+{
+	if (!arg) {
+		sysPrintf((int8_t *)"test_churn: 用法: test_churn DIR ROUNDS FILES_PER_ROUND FILE_SIZE\n");
+		return;
+	}
+
+	const char *p = (const char *)arg;
+	char dir[128] = {0};
+	char s_rounds[24] = {0};
+	char s_files[24] = {0};
+	char s_size[24] = {0};
+	char s_extra[8] = {0};
+	char *outs[5] = {dir, s_rounds, s_files, s_size, s_extra};
+	int caps[5] = {(int)sizeof(dir), (int)sizeof(s_rounds), (int)sizeof(s_files), (int)sizeof(s_size), (int)sizeof(s_extra)};
+
+	for (int t = 0; t < 5; t++) {
+		int pos = 0;
+		while (*p == ' ' || *p == '\t') {
+			p++;
+		}
+		while (*p != '\0' && *p != ' ' && *p != '\t' && pos < caps[t] - 1) {
+			outs[t][pos++] = *p++;
+		}
+		outs[t][pos] = '\0';
+	}
+
+	if (dir[0] == '\0' || s_rounds[0] == '\0' || s_files[0] == '\0' || s_size[0] == '\0' || s_extra[0] != '\0') {
+		sysPrintf((int8_t *)"test_churn: 用法: test_churn DIR ROUNDS FILES_PER_ROUND FILE_SIZE\n");
+		return;
+	}
+
+	uint64_t rounds64 = 0, files64 = 0, fsize64 = 0;
+	if (parse_u64_10(s_rounds, &rounds64) != PARSE_U64_OK ||
+	    parse_u64_10(s_files, &files64) != PARSE_U64_OK ||
+	    parse_u64_10(s_size, &fsize64) != PARSE_U64_OK) {
+		sysPrintf((int8_t *)"test_churn: 参数必须为十进制正整数\n");
+		return;
+	}
+
+	if (rounds64 == 0 || files64 == 0) {
+		sysPrintf((int8_t *)"test_churn: ROUNDS 和 FILES_PER_ROUND 必须大于 0\n");
+		return;
+	}
+	if (rounds64 > 0xFFFFFFFFULL || files64 > 0xFFFFFFFFULL) {
+		sysPrintf((int8_t *)"test_churn: ROUNDS/FILES_PER_ROUND 过大\n");
+		return;
+	}
+
+	uint32_t rounds = (uint32_t)rounds64;
+	uint32_t files_per_round = (uint32_t)files64;
+	uint64_t file_size = fsize64;
+	if (files_per_round > 1024U) {
+		sysPrintf((int8_t *)"test_churn: FILES_PER_ROUND 过大（最大 1024）\n");
+		return;
+	}
+
+	static char file_paths[1024][256];
+	for (uint32_t i = 0; i < files_per_round; i++) {
+		if (build_churn_path(file_paths[i], (int)sizeof(file_paths[i]), dir, i) != 0) {
+			sysPrintf((int8_t *)"test_churn: 文件路径过长，请缩短目录名\n");
+			return;
+		}
+	}
+
+	static const int chunk_size = 4096;
+	static char chunk[chunk_size];
+	for (int i = 0; i < chunk_size; i++) {
+		chunk[i] = (char)0x5A;
+	}
+
+	uint64_t created_ok = 0;
+	uint64_t deleted_ok = 0;
+	uint64_t create_fail = 0;
+	uint64_t write_fail = 0;
+	uint64_t delete_fail = 0;
+	uint64_t delete_skip_missing = 0;
+	uint64_t verify_fail = 0;
+	int first_err = 0;
+
+	uint32_t start_ticks = pit_get_ticks();
+	uint32_t pit_hz = pit_get_frequency_hz();
+	if (pit_hz == 0) {
+		pit_hz = 1000;
+	}
+
+	for (uint32_t r = 0; r < rounds; r++) {
+		for (uint32_t i = 0; i < files_per_round; i++) {
+			const char *path = file_paths[i];
+			int fd = vfs_open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+			if (fd < 0) {
+				create_fail++;
+				if (first_err == 0) {
+					first_err = fd;
+				}
+				continue;
+			}
+
+			uint64_t remain = file_size;
+			int write_ok = 1;
+			while (remain > 0) {
+				int to_write = (remain > (uint64_t)chunk_size) ? chunk_size : (int)remain;
+				int w = vfs_write(fd, chunk, to_write);
+				if (w <= 0) {
+					write_fail++;
+					write_ok = 0;
+					if (first_err == 0) {
+						first_err = (w < 0) ? w : -ENOSPC;
+					}
+					break;
+				}
+				remain -= (uint64_t)w;
+			}
+
+			vfs_close(fd);
+			if (write_ok) {
+				created_ok++;
+			}
+		}
+		
+		for (uint32_t i = 0; i < files_per_round; i++) {
+			const char *path = file_paths[i];
+			int uret = vfs_unlink((const int8_t *)path);
+			if (uret == 0) {
+				deleted_ok++;
+			} else {
+				if (uret == -ENOENT) {
+					delete_skip_missing++;
+				} else {
+					delete_fail++;
+					if (first_err == 0) {
+						first_err = uret;
+					}
+				}
+			}
+
+			struct kstat st;
+			int sret = sysStat(path, &st);
+			if (sret != -ENOENT) {
+				verify_fail++;
+				if (first_err == 0) {
+					first_err = (sret < 0) ? sret : -EEXIST;
+				}
+			}
+		}
+	}
+
+	uint32_t end_ticks = pit_get_ticks();
+	uint32_t elapsed_ticks = end_ticks - start_ticks;
+	uint32_t duration_ms = (elapsed_ticks * 1000u) / pit_hz;
+
+	uint64_t delete_errors = delete_fail + delete_skip_missing + verify_fail;
+	char b_create[32], b_write[32], b_delete[32], b_ms[16];
+	u64_to_dec(b_create, sizeof(b_create), create_fail);
+	u64_to_dec(b_write, sizeof(b_write), write_fail);
+	u64_to_dec(b_delete, sizeof(b_delete), delete_errors);
+	u32_to_dec(b_ms, sizeof(b_ms), (unsigned long)duration_ms);
+
+	sysPrintf((int8_t *)"test_churn: 完成\n");
+	sysPrintf((int8_t *)"  create_err=");
+	sysPrintf((int8_t *)b_create);
+	sysPrintf((int8_t *)", write_err=");
+	sysPrintf((int8_t *)b_write);
+	sysPrintf((int8_t *)", delete_err=");
+	sysPrintf((int8_t *)b_delete);
+	sysPrintf((int8_t *)"\n");
+	sysPrintf((int8_t *)"  耗时 ");
+	sysPrintf((int8_t *)b_ms);
+	sysPrintf((int8_t *)"ms\n");
+
+	if (first_err != 0) {
+		sysPrintf((int8_t *)"  first_err=");
+		print_errno_value(first_err);
+		sysPrintf((int8_t *)"\n");
+	}
+}
+
 static void cmd_echo(const int8_t *arg) {
 	if (!arg) {
 		sysPrintf((int8_t *)"\n");
@@ -1170,6 +1396,7 @@ const struct cmd_entry cmd_table[] = {
 	{0, 0, 0},
 	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},
 	{"test_read", cmd_test_read, "性能测试: test_read <路径>"},
+	{"test_churn", cmd_test_churn, "抖动测试: test_churn DIR ROUNDS FILES_PER_ROUND FILE_SIZE"},
 	{0, 0, 0},
 };
 
