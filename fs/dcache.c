@@ -181,7 +181,17 @@ void dput(struct dentry *dentry)
 		
 		/* 释放关联的 inode（如果存在） */
 		if (dentry->d_inode) {
-			/* 这里应该调用 iput，但简化版先不处理 */
+			struct inode *inode = dentry->d_inode;
+			dentry->d_inode = (struct inode *)0;
+
+			if (inode->i_count > 0) {
+				inode->i_count--;
+			}
+			if (inode->i_count <= 1 &&
+			    inode->i_sb && inode->i_sb->s_op &&
+			    inode->i_sb->s_op->destroy_inode) {
+				inode->i_sb->s_op->destroy_inode(inode);
+			}
 		}
 		
 		/* 标记为未使用 */

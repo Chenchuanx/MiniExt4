@@ -174,6 +174,7 @@ int vfs_open(const char *path, int flags, int mode)
     if (fops && fops->open) {
         int err = fops->open(inode, f);
         if (err < 0) {
+            dput(target);
             if (err == -1) {
                 return -EIO;
             }
@@ -195,6 +196,17 @@ int vfs_close(int fd)
     if (f->f_op && f->f_op->release) {
         f->f_op->release(f->f_inode, f);
     }
+    if (f->f_path_dentry) {
+        dput(f->f_path_dentry);
+    }
+    f->f_inode = 0;
+    f->f_path_dentry = 0;
+    f->f_op = 0;
+    f->f_pos = 0;
+    f->f_flags = 0;
+    f->f_mode = 0;
+    f->f_count = 0;
+    f->f_private = 0;
 
     fd_used[fd] = 0;
     return 0;

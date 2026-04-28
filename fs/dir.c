@@ -315,6 +315,7 @@ int vfs_chdir(const char *path)
 	}
 
 	if (!target->d_inode) {
+		dput(target);
 		return -ENOENT;
 	}
 
@@ -377,24 +378,28 @@ int vfs_unlink(const char *path)
 
 	/* 目前仅支持删除普通文件，不允许删除目录 */
 	if (S_ISDIR(target->d_inode->i_mode)) {
+		dput(target);
 		return -EISDIR;
 	}
 
 	parent = target->d_parent;
 	if (!parent || !parent->d_inode || !parent->d_inode->i_op ||
 	    !parent->d_inode->i_op->unlink) {
+		dput(target);
 		return -EINVAL;
 	}
 
 	{
 		int ur = parent->d_inode->i_op->unlink(parent->d_inode, target);
 		if (ur != 0) {
+			dput(target);
 			if (ur < 0) {
 				return coerce_fs_errno(ur);
 			}
 			return -EIO;
 		}
 	}
+	dput(target);
 	return 0;
 }
 
@@ -440,28 +445,33 @@ int vfs_rmdir(const char *path)
 	}
 
 	if (!target->d_inode) {
+		dput(target);
 		return -ENOENT;
 	}
 
 	/* 只能删除目录 */
 	if (!S_ISDIR(target->d_inode->i_mode)) {
+		dput(target);
 		return -ENOTDIR;
 	}
 
 	/* 防止删除根目录和当前工作目录 */
 	if (target == root || target == cwd) {
+		dput(target);
 		return -EBUSY;
 	}
 
 	parent = target->d_parent;
 	if (!parent || !parent->d_inode || !parent->d_inode->i_op ||
 	    !parent->d_inode->i_op->rmdir) {
+		dput(target);
 		return -EINVAL;
 	}
 
 	{
 		int rr = parent->d_inode->i_op->rmdir(parent->d_inode, target);
 		if (rr != 0) {
+			dput(target);
 			if (rr < 0) {
 				return coerce_fs_errno(rr);
 			}
@@ -469,6 +479,7 @@ int vfs_rmdir(const char *path)
 		}
 	}
 
+	dput(target);
 	return 0;
 }
 
@@ -512,6 +523,7 @@ int vfs_stat(const char *path, struct kstat *st)
         }
     }
     if (!target->d_inode) {
+        dput(target);
         return -ENOENT;
     }
     inode = target->d_inode;
@@ -531,5 +543,6 @@ int vfs_stat(const char *path, struct kstat *st)
     st->blksize  = (u32)sb->s_blocksize;
     st->attributes       = 0;
     st->attributes_mask  = 0;
+    dput(target);
     return 0;
 }

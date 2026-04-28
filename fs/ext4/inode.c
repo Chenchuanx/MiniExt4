@@ -298,12 +298,13 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	parent_group = ext4_inode_group_of_ino(sb, (uint32_t)dir->i_ino);
 	ino = ext4_new_inode_in_group(sb, parent_group);
 	if (ino == 0) {
-		return -1; /* 无可用 inode */
+		/* inode 位图已无可用项（或分配失败），向上层明确返回无空间。 */
+		return -ENOSPC;
 	}
 	inode = sb->s_op->alloc_inode(sb);
 	if (!inode) {
 		ext4_free_inode(sb, (uint32_t)ino);
-		return -1;
+		return -ENOMEM;
 	}
 	inode->i_ino = ino;
 	inode->i_mode = S_IFREG | (mode & 0777);
@@ -335,7 +336,11 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	if (ext4_add_entry(dir, &dentry->d_name, ino) != 0) {
 		sb->s_op->destroy_inode(inode);
 		ext4_free_inode(sb, (uint32_t)ino);
-		return -1;
+		/*
+		 * 目录项插入失败常见于目录空间不足（当前实现未做目录扩展）；
+		 * 返回 ENOSPC，避免被上层笼统映射成 EIO。
+		 */
+		return -ENOSPC;
 	}
 	d_instantiate(dentry, inode);
 	return 0;
@@ -479,17 +484,37 @@ static int ext4_unlink(struct inode *dir, struct dentry *dentry)
 	if (ext4_remove_entry(dir, &dentry->d_name) != 0) {
 		return -1;
 	}
+
+	/*
+	 * 目录项已从磁盘目录中移除，需同步失效 dcache 项。
+	 * 否则后续同名 lookup 可能命中“陈旧 dentry”，导致 touch/rm 循环异常。
+	 */
+	dentry->d_inode = (struct inode *)0;
+	if (!list_empty(&dentry->d_child)) {
+		list_del(&dentry->d_child);
+		INIT_LIST_HEAD(&dentry->d_child);
+	}
+
 	inode->i_nlink--;
 	if (inode->i_nlink == 0) {
+		int wr;
+		int fr;
 		ext4_free_inode_data_blocks(inode);
 
 		inode->i_mode = 0;
 		inode->i_size = 0;
 		inode->i_blocks = 0;
-		(void)sb->s_op->write_inode(inode, NULL);
-		(void)ext4_free_inode(sb, (uint32_t)inode->i_ino);
+		wr = sb->s_op->write_inode(inode, NULL);
+		fr = ext4_free_inode(sb, (uint32_t)inode->i_ino);
+		if (wr < 0 || fr < 0) {
+			return -EIO;
+		}
+		/* on-disk inode 已释放后，回收内存中的 VFS/ext4 inode 对象，避免池耗尽。 */
+		sb->s_op->destroy_inode(inode);
 	} else {
-		sb->s_op->write_inode(inode, NULL);
+		if (sb->s_op->write_inode(inode, NULL) < 0) {
+			return -EIO;
+		}
 	}
 	return 0;
 }
@@ -526,6 +551,14 @@ static int ext4_rmdir(struct inode *dir, struct dentry *dentry)
 	if (ext4_remove_entry(dir, &dentry->d_name) != 0) {
 		return -ENOENT;
 	}
+
+	/* 与 unlink 一致：删除成功后失效 dcache 项，避免命中陈旧目录项。 */
+	dentry->d_inode = (struct inode *)0;
+	if (!list_empty(&dentry->d_child)) {
+		list_del(&dentry->d_child);
+		INIT_LIST_HEAD(&dentry->d_child);
+	}
+
 	inode->i_nlink -= 2; /* 原为 2（. 和 ..） */
 	dir->i_nlink--;
 	ext4_free_inode_data_blocks(inode);
@@ -533,8 +566,14 @@ static int ext4_rmdir(struct inode *dir, struct dentry *dentry)
 	inode->i_mode = 0;
 	inode->i_size = 0;
 	inode->i_blocks = 0;
-	(void)sb->s_op->write_inode(inode, NULL);
-	(void)ext4_free_inode(sb, (uint32_t)inode->i_ino);
+	if (sb->s_op->write_inode(inode, NULL) < 0) {
+		return -EIO;
+	}
+	if (ext4_free_inode(sb, (uint32_t)inode->i_ino) < 0) {
+		return -EIO;
+	}
+	/* 与 unlink 一致：目录 inode 从磁盘删除后，回收内存对象。 */
+	sb->s_op->destroy_inode(inode);
 	sb->s_op->write_inode(dir, NULL);
 	{
 		struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
