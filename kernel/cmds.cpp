@@ -1062,6 +1062,136 @@ static void cmd_test_churn(const int8_t *arg)
 	}
 }
 
+static void cmd_test_mkdir_deep(const int8_t *arg)
+{
+	if (!arg) {
+		sysPrintf((int8_t *)"test_mkdir_deep: 用法: test_mkdir_deep <路径> <层数>\n");
+		return;
+	}
+
+	const char *p = (const char *)arg;
+	char base[128] = {0};
+	char s_depth[24] = {0};
+	char s_extra[8] = {0};
+	char *outs[3] = {base, s_depth, s_extra};
+	int caps[3] = {(int)sizeof(base), (int)sizeof(s_depth), (int)sizeof(s_extra)};
+
+	for (int t = 0; t < 3; t++) {
+		int pos = 0;
+		while (*p == ' ' || *p == '\t') {
+			p++;
+		}
+		while (*p != '\0' && *p != ' ' && *p != '\t' && pos < caps[t] - 1) {
+			outs[t][pos++] = *p++;
+		}
+		outs[t][pos] = '\0';
+	}
+
+	if (base[0] == '\0' || s_depth[0] == '\0' || s_extra[0] != '\0') {
+		sysPrintf((int8_t *)"test_mkdir_deep: 用法: test_mkdir_deep <路径> <层数>\n");
+		return;
+	}
+
+	uint64_t depth64 = 0;
+	if (parse_u64_10(s_depth, &depth64) != PARSE_U64_OK) {
+		sysPrintf((int8_t *)"test_mkdir_deep: 层数必须是十进制正整数\n");
+		return;
+	}
+
+	uint32_t depth = (uint32_t)depth64;
+
+	char saved_cwd[256];
+	int has_saved_cwd = 0;
+	if (sysGetcwd(saved_cwd, sizeof(saved_cwd)) == 0) {
+		has_saved_cwd = 1;
+	}
+
+	int cd_base = sysChdir((const int8_t *)base);
+	if (cd_base != 0) {
+		sysPrintf((int8_t *)"test_mkdir_deep: 无法进入基础路径，错误码=");
+		print_errno_value(cd_base);
+		sysPrintf((int8_t *)"\n");
+		return;
+	}
+
+	uint64_t created = 0;
+	uint64_t exists = 0;
+	uint64_t failed = 0;
+	int first_err = 0;
+
+	uint32_t start_ticks = pit_get_ticks();
+	uint32_t pit_hz = pit_get_frequency_hz();
+	if (pit_hz == 0) {
+		pit_hz = 1000;
+	}
+
+	for (uint32_t i = 0; i < depth; i++) {
+		char ibuf[16];
+		char name[32];
+		u32_to_dec(ibuf, sizeof(ibuf), (unsigned long)i);
+		int npos = 0;
+		name[npos++] = 'd';
+		name[npos++] = '_';
+		for (int j = 0; ibuf[j] != '\0' && npos < (int)sizeof(name) - 1; j++) {
+			name[npos++] = ibuf[j];
+		}
+		name[npos] = '\0';
+
+		int ret = sysMkdir((const int8_t *)name);
+		if (ret == 0) {
+			created++;
+		} else if (ret == -EEXIST) {
+			exists++;
+		} else {
+			failed++;
+			if (first_err == 0) {
+				first_err = ret;
+			}
+			break;
+		}
+
+		int cdret = sysChdir((const int8_t *)name);
+		if (cdret != 0) {
+			failed++;
+			if (first_err == 0) {
+				first_err = cdret;
+			}
+			break;
+		}
+	}
+
+	if (has_saved_cwd) {
+		(void)sysChdir((const int8_t *)saved_cwd);
+	}
+
+	uint32_t end_ticks = pit_get_ticks();
+	uint32_t elapsed_ticks = end_ticks - start_ticks;
+	uint32_t duration_ms = (elapsed_ticks * 1000u) / pit_hz;
+
+	char b0[32], b1[32], b2[32], b3[16];
+	u64_to_dec(b0, sizeof(b0), created);
+	u64_to_dec(b1, sizeof(b1), exists);
+	u64_to_dec(b2, sizeof(b2), failed);
+	u32_to_dec(b3, sizeof(b3), (unsigned long)duration_ms);
+
+	sysPrintf((int8_t *)"test_mkdir_deep: 完成\n");
+	sysPrintf((int8_t *)"  created=");
+	sysPrintf((int8_t *)b0);
+	sysPrintf((int8_t *)", exists=");
+	sysPrintf((int8_t *)b1);
+	sysPrintf((int8_t *)", failed=");
+	sysPrintf((int8_t *)b2);
+	sysPrintf((int8_t *)"\n");
+	sysPrintf((int8_t *)"  耗时 ");
+	sysPrintf((int8_t *)b3);
+	sysPrintf((int8_t *)"ms\n");
+	if (first_err != 0) {
+		sysPrintf((int8_t *)"  first_err=");
+		print_errno_value(first_err);
+		sysPrintf((int8_t *)"\n");
+	}
+}
+
 static void cmd_echo(const int8_t *arg) {
 	if (!arg) {
 		sysPrintf((int8_t *)"\n");
@@ -1397,6 +1527,7 @@ const struct cmd_entry cmd_table[] = {
 	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},
 	{"test_read", cmd_test_read, "性能测试: test_read <路径>"},
 	{"test_churn", cmd_test_churn, "抖动测试: test_churn <路径> <轮次> <每轮文件数> <文件大小>"},
+	{"test_mkdir_deep", cmd_test_mkdir_deep, "目录测试: test_mkdir_deep <路径> <层数>"},
 	{0, 0, 0},
 };
 
