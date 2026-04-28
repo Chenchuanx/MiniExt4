@@ -1362,6 +1362,28 @@ static int should_print_find_path(const char *path, const char *name_pat)
 	return match_glob(name_pat, path_basename(path));
 }
 
+static void find_print_child_path(const char *cwd, const char *name)
+{
+	char full[1024];
+	int pos = 0;
+	if (!cwd || !name) {
+		return;
+	}
+	while (cwd[pos] != '\0' && pos < (int)sizeof(full) - 1) {
+		full[pos] = cwd[pos];
+		pos++;
+	}
+	if (pos > 0 && full[pos - 1] != '/' && pos < (int)sizeof(full) - 1) {
+		full[pos++] = '/';
+	}
+	for (int i = 0; name[i] != '\0' && pos < (int)sizeof(full) - 1; i++) {
+		full[pos++] = name[i];
+	}
+	full[pos] = '\0';
+	sysPrintf((int8_t *)full);
+	sysPrintf((int8_t *)"\n");
+}
+
 static void find_walk(const char *path, const char *name_pat)
 {
 	struct kstat st;
@@ -1373,26 +1395,45 @@ static void find_walk(const char *path, const char *name_pat)
 		return;
 	}
 
-	if (should_print_find_path(path, name_pat)) {
+	if (!S_ISDIR(st.mode)) {
+		if (should_print_find_path(path, name_pat)) {
+			sysPrintf((int8_t *)path);
+			sysPrintf((int8_t *)"\n");
+		}
+		return;
+	}
+
+	char saved_cwd[1024];
+	int has_saved = (sysGetcwd(saved_cwd, sizeof(saved_cwd)) == 0);
+	if (sysChdir((const int8_t *)path) != 0) {
+		sysPrintf((int8_t *)"find: ");
+		sysPrintf((int8_t *)path);
+		sysPrintf((int8_t *)": 无法进入目录\n");
+		return;
+	}
+
+	char cwd_now[1024];
+	if (sysGetcwd(cwd_now, sizeof(cwd_now)) == 0) {
+		if (should_print_find_path(cwd_now, name_pat)) {
+			sysPrintf((int8_t *)cwd_now);
+			sysPrintf((int8_t *)"\n");
+		}
+	} else if (should_print_find_path(path, name_pat)) {
 		sysPrintf((int8_t *)path);
 		sysPrintf((int8_t *)"\n");
 	}
 
-	if (!S_ISDIR(st.mode)) {
-		return;
-	}
-
-	int fd = sysOpen(path, 0, 0);
+	int fd = sysOpen(".", 0, 0);
 	if (fd < 0) {
-		sysPrintf((int8_t *)"find: ");
-		sysPrintf((int8_t *)path);
-		sysPrintf((int8_t *)": 无法打开目录\n");
+		sysPrintf((int8_t *)"find: 无法打开目录\n");
+		if (has_saved) {
+			(void)sysChdir((const int8_t *)saved_cwd);
+		}
 		return;
 	}
 
 	char buf[1024];
 	int nread;
-
 	while ((nread = sysGetdents(fd, buf, sizeof(buf))) > 0) {
 		int bpos = 0;
 		while (bpos < nread) {
@@ -1405,36 +1446,31 @@ static void find_walk(const char *path, const char *name_pat)
 
 			if (!((name_len == 1 && name[0] == '.') ||
 			      (name_len == 2 && name[0] == '.' && name[1] == '.'))) {
-				char child[256];
-				int pos = 0;
-
-				if (path[0] == '/' && path[1] == '\0') {
-					child[pos++] = '/';
-				} else {
-					while (path[pos] != '\0' && pos < (int)sizeof(child) - 1) {
-						child[pos] = path[pos];
-						pos++;
+				struct kstat child_st;
+				int cs = sysStat(name, &child_st);
+				if (cs == 0 && S_ISDIR(child_st.mode)) {
+					find_walk(name, name_pat);
+				} else if (cs == 0) {
+					char cwd_file[1024];
+					if (sysGetcwd(cwd_file, sizeof(cwd_file)) == 0) {
+						if (should_print_find_path(name, name_pat)) {
+							find_print_child_path(cwd_file, name);
+						}
+					} else if (should_print_find_path(name, name_pat)) {
+						sysPrintf((int8_t *)name);
+						sysPrintf((int8_t *)"\n");
 					}
-					if (pos > 0 && child[pos - 1] != '/' && pos < (int)sizeof(child) - 1) {
-						child[pos++] = '/';
-					}
-				}
-
-				for (int i = 0; i < name_len && pos < (int)sizeof(child) - 1; i++) {
-					child[pos++] = name[i];
-				}
-				child[pos] = '\0';
-
-				if (name_len > 0 && child[pos] == '\0') {
-					find_walk(child, name_pat);
 				}
 			}
 
 			bpos += d->d_reclen;
 		}
 	}
-
 	sysClose(fd);
+
+	if (has_saved) {
+		(void)sysChdir((const int8_t *)saved_cwd);
+	}
 }
 
 static void cmd_find(const int8_t *arg)
@@ -1452,9 +1488,9 @@ static void cmd_find(const int8_t *arg)
 		const char *tok1 = 0;
 		const char *tok2 = 0;
 		const char *tok3 = 0;
-		char a1[128] = {0};
-		char a2[128] = {0};
-		char a3[128] = {0};
+		char a1[256] = {0};
+		char a2[256] = {0};
+		char a3[256] = {0};
 		int *lens[3] = {0};
 
 		int l1 = 0, l2 = 0, l3 = 0;
@@ -1465,10 +1501,14 @@ static void cmd_find(const int8_t *arg)
 			while (*p == ' ' || *p == '\t') {
 				p++;
 			}
-			while (*p != '\0' && *p != ' ' && *p != '\t' && *lens[t] < 127) {
+			while (*p != '\0' && *p != ' ' && *p != '\t' && *lens[t] < 255) {
 				outs[t][(*lens[t])++] = *p++;
 			}
 			outs[t][*lens[t]] = '\0';
+			while (*p != '\0' && *p != ' ' && *p != '\t') {
+				/* token 超长时，继续跳过剩余字符，避免误把尾巴当下一参数 */
+				p++;
+			}
 		}
 
 		tok1 = (l1 > 0) ? a1 : 0;
