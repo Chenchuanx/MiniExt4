@@ -615,10 +615,55 @@ int ext4_add_entry(struct inode *dir, const struct qstr *name, unsigned long ino
 
 	/* 非 HTree 目录：沿用原来的线性扫描逻辑 */
 	for (blk_idx = 0; blk_idx < 12; blk_idx++) {
-		uint32_t blocknr = ei->i_block[blk_idx];
-		if (blocknr == 0) {
-			free(buf);
-			return -1;
+		uint32_t blocknr = 0;
+		if (ext4_dir_get_blocknr(dir, blk_idx, &blocknr) < 0) {
+			struct ext4_dir_entry *free_de;
+			int allocated = 0;
+
+			/*
+			 * 目录块不足时在线扩容：
+			 * - extents 目录：通过 extents 映射创建逻辑块；
+			 * - 传统目录：分配直接块并填到 i_block[]。
+			 */
+			if (ei->i_flags & EXT4_INODE_FLAG_EXTENTS) {
+				int is_new = 0;
+				if (ext4_extents_get_block(dir, blk_idx, 1, &blocknr, &is_new) < 0 ||
+				    blocknr == 0) {
+					free(buf);
+					return -1;
+				}
+				allocated = is_new ? 1 : 0;
+			} else {
+				blocknr = ext4_new_block(sb);
+				if (blocknr == 0) {
+					free(buf);
+					return -1;
+				}
+				ei->i_block[blk_idx] = blocknr;
+				allocated = 1;
+			}
+
+			if (allocated) {
+				memset(buf, 0, block_size);
+				free_de = (struct ext4_dir_entry *)buf;
+				free_de->inode = 0;
+				free_de->rec_len = (uint16_t)block_size;
+				free_de->name_len = 0;
+				free_de->file_type = 0;
+
+				ret = ext4_write_block(blocknr, buf);
+				if (ret < 0) {
+					(void)ext4_free_block(sb, blocknr);
+					free(buf);
+					return -1;
+				}
+
+				dir->i_size += block_size;
+				dir->i_blocks += (block_size / 512);
+				if (dir->i_sb && dir->i_sb->s_op && dir->i_sb->s_op->write_inode) {
+					(void)dir->i_sb->s_op->write_inode(dir, (struct writeback_control *)0);
+				}
+			}
 		}
 		ret = ext4_read_block(blocknr, buf);
 		if (ret < 0) {

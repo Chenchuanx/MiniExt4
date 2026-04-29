@@ -899,6 +899,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
 struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 {
     struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+    struct ext4_group_desc gd;
     struct ext4_inode_info *ei;
     struct ext4_inode *raw_inode;
     struct inode *inode;
@@ -908,6 +909,12 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
     uint32_t index = (ino - 1) % inodes_per_group;
     uint32_t inode_table_block;
     uint32_t inode_offset;
+    uint32_t gd_base;
+    uint32_t desc_off;
+    uint32_t gd_block;
+    uint32_t gd_off;
+    uint32_t copy_sz;
+    char *gd_buf;
     char *buf;
     int ret;
     
@@ -915,8 +922,40 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
         return NULL;
     }
     
+    if (group >= sbi->s_groups_count) {
+        return NULL;
+    }
+
+    gd_base = sbi->s_first_data_block + 1;
+    if (block_size == 1024) {
+        gd_base = 2;
+    }
+    desc_off = group * (uint32_t)sbi->s_desc_size;
+    gd_block = gd_base + (desc_off / block_size);
+    gd_off = desc_off % block_size;
+    copy_sz = (uint32_t)sbi->s_desc_size;
+    if (copy_sz > sizeof(struct ext4_group_desc)) {
+        copy_sz = sizeof(struct ext4_group_desc);
+    }
+    if (gd_off + copy_sz > block_size) {
+        return NULL;
+    }
+
+    gd_buf = (char *)malloc(block_size);
+    if (!gd_buf) {
+        return NULL;
+    }
+    ret = ext4_read_block(gd_block, gd_buf);
+    if (ret < 0) {
+        free(gd_buf);
+        return NULL;
+    }
+    memset(&gd, 0, sizeof(gd));
+    memcpy(&gd, gd_buf + gd_off, copy_sz);
+    free(gd_buf);
+
     /* 计算 inode 表块号 */
-    inode_table_block = sbi->s_group_desc->bg_inode_table_lo;
+    inode_table_block = gd.bg_inode_table_lo;
     /* 使用 superblock 中的 inode 大小（从 ext4_mkfs 中设置） */
     uint32_t inode_size = 256;  /* Ext4 固定 256 字节 */
     inode_offset = index * inode_size;
@@ -1094,6 +1133,7 @@ static int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
     struct super_block *sb = inode->i_sb;
     struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+    struct ext4_group_desc gd;
     struct ext4_inode_info *ei;
     struct ext4_inode *raw_inode;
     uint32_t block_size;
@@ -1102,6 +1142,12 @@ static int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
     uint32_t inode_table_block;
     uint32_t inode_offset;
     uint32_t inode_size = 256; /* 与 ext4_mkfs / ext4_iget 保持一致 */
+    uint32_t gd_base;
+    uint32_t desc_off;
+    uint32_t gd_block;
+    uint32_t gd_off;
+    uint32_t copy_sz;
+    char *gd_buf;
     char *buf;
     int ret;
     uint64_t size;
@@ -1123,13 +1169,40 @@ static int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
     group  = (inode->i_ino - 1) / inodes_per_group;
     index  = (inode->i_ino - 1) % inodes_per_group;
 
-    /* 简化版：仅支持单块组文件系统 */
-    if (group != 0) {
+    if (group >= sbi->s_groups_count) {
         return -1;
     }
 
+    gd_base = sbi->s_first_data_block + 1;
+    if (block_size == 1024) {
+        gd_base = 2;
+    }
+    desc_off = group * (uint32_t)sbi->s_desc_size;
+    gd_block = gd_base + (desc_off / block_size);
+    gd_off = desc_off % block_size;
+    copy_sz = (uint32_t)sbi->s_desc_size;
+    if (copy_sz > sizeof(struct ext4_group_desc)) {
+        copy_sz = sizeof(struct ext4_group_desc);
+    }
+    if (gd_off + copy_sz > block_size) {
+        return -1;
+    }
+
+    gd_buf = (char *)malloc(block_size);
+    if (!gd_buf) {
+        return -1;
+    }
+    ret = ext4_read_block(gd_block, gd_buf);
+    if (ret < 0) {
+        free(gd_buf);
+        return -1;
+    }
+    memset(&gd, 0, sizeof(gd));
+    memcpy(&gd, gd_buf + gd_off, copy_sz);
+    free(gd_buf);
+
     /* 计算 inode 表块号与偏移（与 ext4_iget 相同） */
-    inode_table_block = sbi->s_group_desc->bg_inode_table_lo;
+    inode_table_block = gd.bg_inode_table_lo;
     inode_offset = index * inode_size;
     inode_table_block += inode_offset / block_size;
     inode_offset %= block_size;

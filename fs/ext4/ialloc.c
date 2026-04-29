@@ -79,6 +79,107 @@ static void simple_free(void *ptr)
 #define malloc simple_malloc
 #define free simple_free
 
+static int ext4_read_group_desc(struct super_block *sb, uint32_t group,
+				struct ext4_group_desc *out_gd)
+{
+	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+	uint32_t block_size = ext4_get_block_size();
+	uint32_t gd_base;
+	uint32_t desc_off;
+	uint32_t blk;
+	uint32_t off;
+	uint32_t copy_sz;
+	char *buf;
+	int ret;
+
+	if (!sbi || !out_gd || sbi->s_desc_size == 0) {
+		return -1;
+	}
+	if (group >= sbi->s_groups_count) {
+		return -1;
+	}
+
+	gd_base = sbi->s_first_data_block + 1;
+	if (block_size == 1024) {
+		gd_base = 2;
+	}
+	desc_off = group * (uint32_t)sbi->s_desc_size;
+	blk = gd_base + (desc_off / block_size);
+	off = desc_off % block_size;
+	copy_sz = (uint32_t)sbi->s_desc_size;
+	if (copy_sz > sizeof(struct ext4_group_desc)) {
+		copy_sz = sizeof(struct ext4_group_desc);
+	}
+	if (off + copy_sz > block_size) {
+		return -1;
+	}
+
+	buf = (char *)malloc(block_size);
+	if (!buf) {
+		return -1;
+	}
+	ret = ext4_read_block(blk, buf);
+	if (ret < 0) {
+		free(buf);
+		return -1;
+	}
+
+	memset(out_gd, 0, sizeof(*out_gd));
+	memcpy(out_gd, buf + off, copy_sz);
+	free(buf);
+	return 0;
+}
+
+static int ext4_write_group_desc(struct super_block *sb, uint32_t group,
+				 const struct ext4_group_desc *gd)
+{
+	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+	uint32_t block_size = ext4_get_block_size();
+	uint32_t gd_base;
+	uint32_t desc_off;
+	uint32_t blk;
+	uint32_t off;
+	uint32_t copy_sz;
+	char *buf;
+	int ret;
+
+	if (!sbi || !gd || sbi->s_desc_size == 0) {
+		return -1;
+	}
+	if (group >= sbi->s_groups_count) {
+		return -1;
+	}
+
+	gd_base = sbi->s_first_data_block + 1;
+	if (block_size == 1024) {
+		gd_base = 2;
+	}
+	desc_off = group * (uint32_t)sbi->s_desc_size;
+	blk = gd_base + (desc_off / block_size);
+	off = desc_off % block_size;
+	copy_sz = (uint32_t)sbi->s_desc_size;
+	if (copy_sz > sizeof(struct ext4_group_desc)) {
+		copy_sz = sizeof(struct ext4_group_desc);
+	}
+	if (off + copy_sz > block_size) {
+		return -1;
+	}
+
+	buf = (char *)malloc(block_size);
+	if (!buf) {
+		return -1;
+	}
+	ret = ext4_read_block(blk, buf);
+	if (ret < 0) {
+		free(buf);
+		return -1;
+	}
+	memcpy(buf + off, gd, copy_sz);
+	ret = ext4_write_block(blk, buf);
+	free(buf);
+	return ret;
+}
+
 /**
  * ext4_read_inode_bitmap - 读取 Inode 位图
  * @sb: 超级块
@@ -91,19 +192,20 @@ static uint32_t ext4_read_inode_bitmap(struct super_block *sb, uint32_t group,
 				       char *bitmap_buf)
 {
 	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+	struct ext4_group_desc gd_local;
 	uint32_t bitmap_block;
 	int ret;
 
 	if (!sbi || !sbi->s_group_desc) {
 		return 0;
 	}
-
-	/* 简化版：只支持第 0 块组 */
-	if (group != 0) {
+	if (group >= sbi->s_groups_count) {
 		return 0;
 	}
-
-	bitmap_block = sbi->s_group_desc->bg_inode_bitmap_lo;
+	if (ext4_read_group_desc(sb, group, &gd_local) < 0) {
+		return 0;
+	}
+	bitmap_block = gd_local.bg_inode_bitmap_lo;
 	ret = ext4_read_block(bitmap_block, bitmap_buf);
 	if (ret < 0) {
 		return 0;
@@ -141,64 +243,17 @@ static int ext4_write_inode_bitmap(struct super_block *sb,
 static int ext4_update_group_desc_inode(struct super_block *sb, uint32_t group)
 {
 	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
-	uint32_t gd_base;
-	uint32_t desc_off;
-	uint32_t blocknr;
-	uint32_t off_in_block;
-	uint32_t block_size = ext4_get_block_size();
-	uint32_t copy_sz;
-	char *buf;
-	int ret;
 
 	if (!sbi || !sbi->s_group_desc) {
 		return -1;
 	}
-
-	if (sbi->s_desc_size == 0 || sbi->s_desc_size > block_size) {
-		return -1;
+	/* 只缓存了 group0 描述符，避免误把 group0 内容覆盖到其它组。 */
+	if (group != 0) {
+		return 0;
 	}
-	if (group >= sbi->s_groups_count) {
-		return -1;
-	}
-
-	buf = (char *)malloc(block_size);
-	if (!buf) {
-		return -1;
-	}
-
-	/* 计算 group 对应描述符在 GDT 中的位置 */
-	gd_base = sbi->s_first_data_block + 1;
-	if (block_size == 1024) {
-		gd_base = 2;
-	}
-	desc_off = group * (uint32_t)sbi->s_desc_size;
-	blocknr = gd_base + (desc_off / block_size);
-	off_in_block = desc_off % block_size;
-
-	copy_sz = sbi->s_desc_size;
-	if (copy_sz > sizeof(struct ext4_group_desc)) {
-		copy_sz = sizeof(struct ext4_group_desc);
-	}
-	if (off_in_block + copy_sz > block_size) {
-		free(buf);
-		return -1;
-	}
-
-	ret = ext4_read_block(blocknr, buf);
-	if (ret < 0) {
-		free(buf);
-		return -1;
-	}
-
-	/* 当前实现不维护 inode table 尾部未初始化语义，固定清零。 */
 	sbi->s_group_desc->bg_itable_unused_lo = 0;
 	sbi->s_group_desc->bg_itable_unused_hi = 0;
-
-	memcpy(buf + off_in_block, sbi->s_group_desc, copy_sz);
-
-	ret = ext4_write_block(blocknr, buf);
-	free(buf);
-	return ret;
+	return ext4_write_group_desc(sb, 0, sbi->s_group_desc);
 }
 
 int ext4_write_group_desc_cached(struct super_block *sb, uint32_t group)
@@ -221,88 +276,96 @@ uint32_t ext4_new_inode_in_group(struct super_block *sb, uint32_t preferred_grou
 	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
 	uint32_t block_size = ext4_get_block_size();
 	uint32_t inodes_per_group;
+	uint32_t groups_count;
+	uint32_t start_group;
 	uint32_t bitmap_block;
 	char *bitmap_buf;
-	uint32_t i;
+	uint32_t g;
+	uint32_t groups_scanned;
 	uint32_t new_ino = 0;
+	struct ext4_group_desc gd_local;
 	int ret;
 
 	if (!sbi || !sbi->s_group_desc) {
 		return 0;
 	}
 
-	/*
-	 * MiniExt4 当前 inode 位图/表路径仍是单组实现。
-	 * 先保留接口，后续扩展多块组 inode 分配时可直接使用 preferred_group。
-	 */
-	(void)preferred_group;
-
 	inodes_per_group = sbi->s_inodes_per_group;
+	if (inodes_per_group == 0) {
+		return 0;
+	}
+	groups_count = sbi->s_groups_count;
+	if (groups_count == 0) {
+		groups_count = 1;
+	}
+	start_group = (preferred_group < groups_count) ? preferred_group : 0;
 
-	/* 不仅依赖计数字段；计数可能不准，仍尝试扫描位图。 */
-
-	/* 分配位图缓冲区 */
 	bitmap_buf = (char *)malloc(block_size);
 	if (!bitmap_buf) {
 		return 0;
 	}
 
-	/* 读取 inode 位图（简化版：只支持第 0 块组） */
-	bitmap_block = ext4_read_inode_bitmap(sb, 0, bitmap_buf);
-	if (bitmap_block == 0) {
-		free(bitmap_buf);
-		return 0;
-	}
-
-	/* 在位图中查找第一个空闲 inode */
-	/* 位图中：0 = 空闲，1 = 已使用 */
-	for (i = 0; i < inodes_per_group; i++) {
-		uint32_t byte = i / 8;
-		uint32_t bit = i % 8;
-
-		if (byte >= block_size) {
-			break; /* 超出位图范围 */
+	for (groups_scanned = 0; groups_scanned < groups_count; groups_scanned++) {
+		uint32_t i;
+		g = start_group + groups_scanned;
+		if (g >= groups_count) {
+			g -= groups_count;
 		}
 
-		if (!(bitmap_buf[byte] & (1 << bit))) {
-			/* 找到空闲 inode，标记为已使用 */
-			bitmap_buf[byte] |= (1 << bit);
-			new_ino = i + 1; /* inode 号从 1 开始 */
-			break;
+		bitmap_block = ext4_read_inode_bitmap(sb, g, bitmap_buf);
+		if (bitmap_block == 0) {
+			continue;
 		}
+		if (ext4_read_group_desc(sb, g, &gd_local) < 0) {
+			continue;
+		}
+
+		for (i = 0; i < inodes_per_group; i++) {
+			uint32_t byte = i / 8;
+			uint32_t bit = i % 8;
+			uint32_t cand_ino = g * inodes_per_group + i + 1;
+
+			if (byte >= block_size) {
+				break;
+			}
+			if (cand_ino == 0 || cand_ino > sbi->s_inodes_count) {
+				break;
+			}
+			if (!(bitmap_buf[byte] & (1 << bit))) {
+				bitmap_buf[byte] |= (1 << bit);
+				new_ino = cand_ino;
+				break;
+			}
+		}
+
+		if (new_ino == 0) {
+			continue;
+		}
+
+		ret = ext4_write_inode_bitmap(sb, bitmap_block, bitmap_buf);
+		if (ret < 0) {
+			new_ino = 0;
+			continue;
+		}
+
+		if (gd_local.bg_free_inodes_count_lo > 0) {
+			gd_local.bg_free_inodes_count_lo--;
+		}
+		gd_local.bg_itable_unused_lo = 0;
+		gd_local.bg_itable_unused_hi = 0;
+		ret = ext4_write_group_desc(sb, g, &gd_local);
+		if (ret < 0) {
+			new_ino = 0;
+			continue;
+		}
+		if (g == 0) {
+			*sbi->s_group_desc = gd_local;
+		}
+
+		(void)ext4_sync_super_free_counts(sb);
+		break;
 	}
-
-	if (new_ino == 0) {
-		/* 没有找到空闲 inode */
-		free(bitmap_buf);
-		return 0;
-	}
-
-	/* 写回 inode 位图 */
-	ret = ext4_write_inode_bitmap(sb, bitmap_block, bitmap_buf);
-	if (ret < 0) {
-		free(bitmap_buf);
-		return 0;
-	}
-
-	/* 更新组描述符中的空闲 inode 计数 */
-	if (sbi->s_group_desc->bg_free_inodes_count_lo > 0) {
-		sbi->s_group_desc->bg_free_inodes_count_lo--;
-	}
-	sbi->s_group_desc->bg_itable_unused_lo = 0;
-	sbi->s_group_desc->bg_itable_unused_hi = 0;
-
-	/* 写回组描述符 */
-	ret = ext4_update_group_desc_inode(sb, 0);
-	if (ret < 0) {
-		free(bitmap_buf);
-		return 0;
-	}
-
-	(void)ext4_sync_super_free_counts(sb);
-
 	free(bitmap_buf);
-
 	return new_ino;
 }
 
@@ -328,6 +391,7 @@ int ext4_free_inode(struct super_block *sb, uint32_t ino)
 	uint32_t index;
 	uint32_t bitmap_block;
 	char *bitmap_buf;
+	struct ext4_group_desc gd_local;
 	int ret;
 
 	if (!sbi || !sbi->s_group_desc) {
@@ -343,8 +407,7 @@ int ext4_free_inode(struct super_block *sb, uint32_t ino)
 	group = (ino - 1) / inodes_per_group;
 	index = (ino - 1) % inodes_per_group;
 
-	/* 简化版：只支持第 0 块组 */
-	if (group != 0) {
+	if (group >= sbi->s_groups_count) {
 		return -1;
 	}
 
@@ -391,16 +454,22 @@ int ext4_free_inode(struct super_block *sb, uint32_t ino)
 		return -1;
 	}
 
-	/* 更新组描述符中的空闲 inode 计数 */
-	sbi->s_group_desc->bg_free_inodes_count_lo++;
-	sbi->s_group_desc->bg_itable_unused_lo = 0;
-	sbi->s_group_desc->bg_itable_unused_hi = 0;
+	if (ext4_read_group_desc(sb, group, &gd_local) < 0) {
+		free(bitmap_buf);
+		return -1;
+	}
+	gd_local.bg_free_inodes_count_lo++;
+	gd_local.bg_itable_unused_lo = 0;
+	gd_local.bg_itable_unused_hi = 0;
 
 	/* 写回组描述符 */
-	ret = ext4_update_group_desc_inode(sb, group);
+	ret = ext4_write_group_desc(sb, group, &gd_local);
 	if (ret < 0) {
 		free(bitmap_buf);
 		return ret;
+	}
+	if (group == 0) {
+		*sbi->s_group_desc = gd_local;
 	}
 
 	(void)ext4_sync_super_free_counts(sb);
