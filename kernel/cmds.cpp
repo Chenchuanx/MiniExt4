@@ -8,169 +8,8 @@
 #include <linux/string.h>
 #include <linux/fs.h>
 #include <fs/ext4/ext4.h>
+#include <lib/numfmt.h>
 #include <lib/time.h>
-
-/*
- * u32_to_dec - 将无符号整数转换为十进制字符串
- *
- * @buf:    输出缓冲区
- * @buf_size: 缓冲区大小
- * @v:      要转换的无符号整数
- */
-static void u32_to_dec(char *buf, int buf_size, unsigned long v)
-{
-    if (buf_size <= 1) {
-        return;
-    }
-
-    char tmp[16];
-    int pos = 0;
-
-    if (v == 0U) {
-        tmp[pos++] = '0';
-    } else {
-        while (v > 0U && pos < (int)sizeof(tmp)) {
-            unsigned int d = v % 10U;
-            tmp[pos++] = (char)('0' + d);
-            v /= 10U;
-        }
-    }
-
-    int out = 0;
-    if (pos >= buf_size) {
-        pos = buf_size - 1;
-    }
-    while (pos > 0) {
-        buf[out++] = tmp[--pos];
-    }
-    buf[out] = '\0';
-}
-
-/*
- * u64_to_dec - 将 64 位无符号整数转换为十进制字符串
- *
- * 说明：
- *  - 在 32 位内核里避免使用 64 位除法/取模，防止引入 libgcc 运行时符号依赖。
- */
-static void u64_to_dec(char *buf, int buf_size, uint64_t v)
-{
-	if (buf_size <= 1) {
-		return;
-	}
-
-	static const uint64_t pow10[] = {
-		10000000000000000000ULL,
-		1000000000000000000ULL,
-		100000000000000000ULL,
-		10000000000000000ULL,
-		1000000000000000ULL,
-		100000000000000ULL,
-		10000000000000ULL,
-		1000000000000ULL,
-		100000000000ULL,
-		10000000000ULL,
-		1000000000ULL,
-		100000000ULL,
-		10000000ULL,
-		1000000ULL,
-		100000ULL,
-		10000ULL,
-		1000ULL,
-		100ULL,
-		10ULL,
-		1ULL
-	};
-
-	int out = 0;
-	int started = 0;
-	for (int i = 0; i < (int)(sizeof(pow10) / sizeof(pow10[0])); i++) {
-		uint8_t d = 0;
-		while (v >= pow10[i]) {
-			v -= pow10[i];
-			d++;
-		}
-
-		if (d != 0 || started || i == (int)(sizeof(pow10) / sizeof(pow10[0])) - 1) {
-			if (out < buf_size - 1) {
-				buf[out++] = (char)('0' + d);
-			}
-			started = 1;
-		}
-	}
-	buf[out] = '\0';
-}
-
-/*
- * readable_size - 将字节大小转换为可读的格式
- *
- * @size:    字节大小
- * @buf:    输出缓冲区
- * @buf_size: 缓冲区大小
- */
-static void readable_size(unsigned long size, char *buf, int buf_size)
-{
-    const char *units[] = { "B", "K", "M", "G", "T" };
-    int unit = 0;
-
-    unsigned long whole = size;
-    unsigned long rem = 0;
-
-    /* 将 size 逐级换算到合适单位，同时保留余数用于一位小数 */
-    while (whole >= 1024U && unit < 4) {
-        rem = whole & 1023U;
-        whole >>= 10; /* /1024 */
-        unit++;
-    }
-
-    if (buf_size <= 1) {
-        return;
-    }
-
-    /* B：不显示小数 */
-    if (unit == 0) {
-        char num[16];
-        u32_to_dec(num, sizeof(num), whole);
-        int i = 0, j = 0;
-        while (num[i] != '\0' && j < buf_size - 2) {
-            buf[j++] = num[i++];
-        }
-        if (j < buf_size - 1) {
-            buf[j++] = units[unit][0];
-            buf[j] = '\0';
-        } else {
-            buf[buf_size - 1] = '\0';
-        }
-        return;
-    }
-
-    /* 一位小数：decimal = round(rem * 10 / 1024) */
-    unsigned long decimal = (rem * 10U + 512U) >> 10; /* /1024 */
-    if (decimal >= 10U) {
-        whole += 1U;
-        decimal = 0U;
-    }
-
-    /* 组装字符串：whole[.decimal]unit */
-    int j = 0;
-    char num[16];
-    u32_to_dec(num, sizeof(num), whole);
-    for (int i = 0; num[i] != '\0' && j < buf_size - 1; i++) {
-        buf[j++] = num[i];
-    }
-
-    if (decimal != 0U && j < buf_size - 2) {
-        buf[j++] = '.';
-        buf[j++] = (char)('0' + (int)decimal);
-    }
-
-    if (j < buf_size - 1) {
-        buf[j++] = units[unit][0];
-    }
-    if (j >= buf_size) {
-        j = buf_size - 1;
-    }
-    buf[j] = '\0';
-}
 
 /* VFS 失败为 -errno；打印时输出正的 errno 数值（见 include/linux/errno.h） */
 static void print_errno_value(int err)
@@ -200,6 +39,125 @@ static void cmd_pwd(const int8_t *arg) {
 		sysPrintf((int8_t *)"\n");
 	} else {
 		sysPrintf((int8_t *)"pwd: 出错\n");
+	}
+}
+
+static void cmd_df(const int8_t *arg)
+{
+	int human = 0;
+	const char *opt = arg ? (const char *)arg : 0;
+	if (opt) {
+		while (*opt == ' ' || *opt == '\t') {
+			opt++;
+		}
+		if (*opt != '\0') {
+			if (strcmp((const int8_t *)opt, (const int8_t *)"-h") == 0) {
+				human = 1;
+			} else {
+				sysPrintf((int8_t *)"df: 用法: df [-h]\n");
+				return;
+			}
+		}
+	}
+
+	struct super_block *sb = vfs_get_root_sb();
+	if (!sb || !sb->s_fs_info) {
+		sysPrintf((int8_t *)"df: 文件系统未挂载\n");
+		return;
+	}
+
+	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+	if (sbi->s_block_size == 0 || sbi->s_block_size > 4096U) {
+		sysPrintf((int8_t *)"df: 不支持的块大小\n");
+		return;
+	}
+
+	char sb_buf[4096];
+	if (ext4_read_block(0, sb_buf) < 0) {
+		sysPrintf((int8_t *)"df: 读取超级块失败\n");
+		return;
+	}
+
+	struct ext4_super_block *esb = (struct ext4_super_block *)(sb_buf + 1024);
+	if (esb->s_magic != EXT4_SUPER_MAGIC) {
+		sysPrintf((int8_t *)"df: ext4 超级块无效\n");
+		return;
+	}
+
+	uint64_t total_blocks = ((uint64_t)esb->s_blocks_count_hi << 32) |
+				(uint64_t)esb->s_blocks_count_lo;
+	uint64_t free_blocks = ((uint64_t)esb->s_free_blocks_count_hi << 32) |
+			       (uint64_t)esb->s_free_blocks_count_lo;
+	uint64_t reserved_blocks = ((uint64_t)esb->s_r_blocks_count_hi << 32) |
+				   (uint64_t)esb->s_r_blocks_count_lo;
+	uint64_t used_blocks = (total_blocks >= free_blocks) ? (total_blocks - free_blocks) : 0ULL;
+	if (reserved_blocks > free_blocks) {
+		reserved_blocks = free_blocks;
+	}
+	uint64_t avail_blocks = free_blocks - reserved_blocks;
+
+	uint64_t block_size = (uint64_t)sbi->s_block_size;
+	uint64_t total_bytes = total_blocks * block_size;
+	uint64_t used_bytes = used_blocks * block_size;
+	uint64_t avail_bytes = avail_blocks * block_size;
+
+	/* 避免 64 位除法：比较乘积计算 Use% */
+	unsigned int use_percent = 0;
+	if (total_blocks > 0) {
+		uint64_t lhs = used_blocks * 100ULL;
+		for (unsigned int p = 1; p <= 100; p++) {
+			uint64_t rhs = total_blocks * (uint64_t)p;
+			if (lhs >= rhs) {
+				use_percent = p;
+			} else {
+				break;
+			}
+		}
+	}
+
+	char use_buf[8];
+	u32_to_dec(use_buf, sizeof(use_buf), (unsigned long)use_percent);
+
+	if (human) {
+		char size_buf[16];
+		char used_buf[16];
+		char avail_buf[16];
+		readable_size((unsigned long)total_bytes, size_buf, sizeof(size_buf));
+		readable_size((unsigned long)used_bytes, used_buf, sizeof(used_buf));
+		readable_size((unsigned long)avail_bytes, avail_buf, sizeof(avail_buf));
+
+		sysPrintf((int8_t *)"Filesystem      Size  Used Avail Use% Mounted on\n");
+		sysPrintf((int8_t *)"ext4            ");
+		sysPrintf((int8_t *)size_buf);
+		sysPrintf((int8_t *)"  ");
+		sysPrintf((int8_t *)used_buf);
+		sysPrintf((int8_t *)"  ");
+		sysPrintf((int8_t *)avail_buf);
+		sysPrintf((int8_t *)"  ");
+		sysPrintf((int8_t *)use_buf);
+		sysPrintf((int8_t *)"%   /\n");
+	} else {
+		uint64_t total_k = total_bytes >> 10;
+		uint64_t used_k = used_bytes >> 10;
+		uint64_t avail_k = avail_bytes >> 10;
+		char total_buf[32];
+		char used_buf[32];
+		char avail_buf[32];
+
+		u64_to_dec(total_buf, sizeof(total_buf), total_k);
+		u64_to_dec(used_buf, sizeof(used_buf), used_k);
+		u64_to_dec(avail_buf, sizeof(avail_buf), avail_k);
+
+		sysPrintf((int8_t *)"Filesystem     1K-blocks    Used Available Use% Mounted on\n");
+		sysPrintf((int8_t *)"ext4           ");
+		sysPrintf((int8_t *)total_buf);
+		sysPrintf((int8_t *)"    ");
+		sysPrintf((int8_t *)used_buf);
+		sysPrintf((int8_t *)"    ");
+		sysPrintf((int8_t *)avail_buf);
+		sysPrintf((int8_t *)"  ");
+		sysPrintf((int8_t *)use_buf);
+		sysPrintf((int8_t *)"%   /\n");
 	}
 }
 
@@ -1544,6 +1502,7 @@ const struct cmd_entry cmd_table[] = {
 	{"help", cmd_help, "列出所有命令"},
 	{"time", cmd_time, "显示当前 RTC 时间"},
 	{"pwd", cmd_pwd, "显示当前工作目录"},
+	{"df", cmd_df, "显示磁盘空间（总量/已用/可用）"},
 	{"ls", cmd_ls, "列出目录内容 [-l]详细 [-h]易读大小 [-i]显示inode"},
 	{"mkdir", cmd_mkdir, "创建目录"},
 	{"cd", cmd_cd, "切换工作目录"},

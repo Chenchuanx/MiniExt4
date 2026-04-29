@@ -79,6 +79,7 @@ set(KERNEL_SOURCES
     lib/time.cpp
     lib/syscall.cpp
     lib/string.cpp
+    lib/numfmt.cpp
     kernel/shell.cpp
     kernel/cmds.cpp
 )
