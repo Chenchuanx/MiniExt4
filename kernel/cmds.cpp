@@ -610,32 +610,6 @@ static void cmd_test_fill(const int8_t *arg) {
 	printf((int8_t *)"test_fill: 完成\n");
 }
 
-static void cmd_ext4_mode(const int8_t *arg) {
-	if (!arg || arg[0] == '\0') {
-		printf((int8_t *)"ext4_mode: 当前 prealloc=", ext4_get_prealloc_goal_len());
-		printf((int8_t *)", sync_batch=", ext4_get_bg_sync_batch());
-		printf((int8_t *)"\n");
-		printf((int8_t *)"用法: ext4_mode safe|perf\n");
-		return;
-	}
-
-	if (strcmp((const int8_t *)arg, (const int8_t *)"safe") == 0) {
-		ext4_set_prealloc_goal_len(EXT4_TUNING_SAFE_PREALLOC_GOAL_LEN);
-		ext4_set_bg_sync_batch(EXT4_TUNING_SAFE_BG_SYNC_BATCH);
-		printf((int8_t *)"ext4_mode: 已切换到 safe\n");
-		return;
-	}
-
-	if (strcmp((const int8_t *)arg, (const int8_t *)"perf") == 0) {
-		ext4_set_prealloc_goal_len(EXT4_TUNING_PERF_PREALLOC_GOAL_LEN);
-		ext4_set_bg_sync_batch(EXT4_TUNING_PERF_BG_SYNC_BATCH);
-		printf((int8_t *)"ext4_mode: 已切换到 perf\n");
-		return;
-	}
-
-	printf((int8_t *)"ext4_mode: 仅支持 safe|perf\n");
-}
-
 static void cmd_test_read(const int8_t *arg) {
 	if (!arg) {
 		printf((int8_t *)"test_read: 用法: test_read <路径>\n");
@@ -1438,7 +1412,6 @@ const struct cmd_entry cmd_table[] = {
 	{"find", cmd_find, "递归查找: find <路径> [-name <模式>]"},
 	{"rm", cmd_rm, "删除文件"},
 	{"rmdir", cmd_rmdir, "删除空目录"},
-	{"ext4_mode", cmd_ext4_mode, "切换 ext4 调优模式: safe|perf"},
 	{0, 0, 0},
 	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},
 	{"test_read", cmd_test_read, "性能测试: test_read <路径>"},
