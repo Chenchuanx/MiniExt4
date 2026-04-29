@@ -354,9 +354,13 @@ struct ext4_extent_idx {
 /* 基于 extents 的数据块映射接口 */
 int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 			   int create, uint32_t *out_block, int *is_new);
+int ext4_extents_map_blocks(struct inode *inode, uint32_t lblock,
+			    uint32_t max_blocks, uint32_t *out_block,
+			    uint32_t *out_len);
 
 /* 函数声明 */
 int ext4_read_block(uint32_t blocknr, void *buf);
+int ext4_read_blocks(uint32_t blocknr, uint32_t blocks, void *buf);
 int ext4_write_block(uint32_t blocknr, const void *buf);
 int ext4_write_blocks(uint32_t blocknr, uint32_t blocks, const void *buf);
 void ext4_set_block_size(uint32_t size);

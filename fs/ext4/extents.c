@@ -285,7 +285,7 @@ static int ext4_extents_insert(struct ext4_extent_header *eh,
 	/* 不能合并时，按逻辑块号有序插入 */
 	if (entries == max) {
 		/* 节点已满：当前简化实现直接报错（不做 B+Tree 分裂） */
-		printf("MiniExt4: extent node full, cannot insert new extent\n");
+		// printf("MiniExt4: extent node full, cannot insert new extent\n");
 		return -1;
 	}
 
@@ -860,6 +860,72 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 		}
 	}
 
+	return 0;
+}
+
+int ext4_extents_map_blocks(struct inode *inode, uint32_t lblock,
+			    uint32_t max_blocks, uint32_t *out_block,
+			    uint32_t *out_len)
+{
+	struct ext4_inode_info *ei;
+	struct ext4_extent_header *eh_root;
+	struct ext4_ext_path path[EXT4_EXT_MAX_DEPTH + 1];
+	struct ext4_extent_header *leaf;
+	struct ext4_extent *ex;
+	int depth;
+	int prev_index;
+	int idx;
+	uint32_t ee_block;
+	uint32_t off_in_extent;
+	uint32_t avail;
+	uint64_t phys_start;
+
+	if (!inode || !inode->i_private || !out_block || !out_len || max_blocks == 0) {
+		return -1;
+	}
+
+	*out_block = 0;
+	*out_len = 0;
+
+	ei = (struct ext4_inode_info *)inode->i_private;
+	eh_root = (struct ext4_extent_header *)ei->i_block;
+	if (eh_root->eh_magic != EXT4_EXT_MAGIC) {
+		return 0;
+	}
+
+	if (ext4_extents_read_path(inode, lblock, path, &depth) < 0) {
+		return -1;
+	}
+
+	leaf = path[depth].eh;
+	idx = ext4_extents_find(leaf, lblock, &ex, &prev_index);
+	(void)idx;
+	(void)prev_index;
+	if (!ex) {
+		ext4_extents_free_path(path, depth);
+		return 0;
+	}
+
+	ee_block = ex->ee_block;
+	if (lblock < ee_block) {
+		ext4_extents_free_path(path, depth);
+		return -1;
+	}
+
+	off_in_extent = lblock - ee_block;
+	if (off_in_extent >= ex->ee_len) {
+		ext4_extents_free_path(path, depth);
+		return -1;
+	}
+
+	avail = (uint32_t)ex->ee_len - off_in_extent;
+	if (avail > max_blocks) {
+		avail = max_blocks;
+	}
+	phys_start = ext4_extent_pblock(ex) + (uint64_t)off_in_extent;
+	*out_block = (uint32_t)phys_start;
+	*out_len = avail;
+	ext4_extents_free_path(path, depth);
 	return 0;
 }
 

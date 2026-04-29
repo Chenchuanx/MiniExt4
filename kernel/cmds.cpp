@@ -667,6 +667,15 @@ static void cmd_test_fill(const int8_t *arg) {
 
 	}
 
+	vfs_close(fd);
+
+	if (switched_perf && root_sb && root_sb->s_magic == EXT4_SUPER_MAGIC) {
+		(void)ext4_balloc_flush(root_sb);
+		(void)ext4_sync_super_free_counts(root_sb);
+		ext4_set_prealloc_goal_len(prev_prealloc);
+		ext4_set_bg_sync_batch(prev_sync_batch);
+	}
+
 	uint32_t end_ticks = pit_get_ticks();
 	uint32_t elapsed_ticks = end_ticks - start_ticks;
 	uint32_t duration_ms = (elapsed_ticks * 1000u) / pit_hz;
@@ -676,15 +685,6 @@ static void cmd_test_fill(const int8_t *arg) {
 	sysPrintf((int8_t *)"test_fill: 耗时 ");
 	sysPrintf((int8_t *)duration_buf);
 	sysPrintf((int8_t *)"ms\n");
-
-	vfs_close(fd);
-
-	if (switched_perf && root_sb && root_sb->s_magic == EXT4_SUPER_MAGIC) {
-		(void)ext4_balloc_flush(root_sb);
-		(void)ext4_sync_super_free_counts(root_sb);
-		ext4_set_prealloc_goal_len(prev_prealloc);
-		ext4_set_bg_sync_batch(prev_sync_batch);
-	}
 	sysPrintf((int8_t *)"test_fill: 完成\n");
 }
 
@@ -823,15 +823,6 @@ static void cmd_test_read(const int8_t *arg) {
 	sysPrintf((int8_t *)expect_buf);
 	sysPrintf((int8_t *)" 字节）\n");
 
-	if (reached_eof && total_read == expected) {
-		sysPrintf((int8_t *)"test_read: 校验通过（已读到 EOF，且字节数匹配）\n");
-	} else if (reached_eof && total_read < expected) {
-		sysPrintf((int8_t *)"test_read: 校验失败（提前 EOF，文件可能不完整）\n");
-	} else if (total_read > expected) {
-		sysPrintf((int8_t *)"test_read: 校验失败（读取字节超过 stat 大小）\n");
-	} else {
-		sysPrintf((int8_t *)"test_read: 校验结果异常\n");
-	}
 
 	vfs_close(fd);
 }

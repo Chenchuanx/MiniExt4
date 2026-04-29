@@ -13,9 +13,13 @@
 
 /* 前向声明 */
 extern int ext4_read_block(uint32_t blocknr, void *buf);
+extern int ext4_read_blocks(uint32_t blocknr, uint32_t blocks, void *buf);
 extern int ext4_write_block(uint32_t blocknr, const void *buf);
 extern int ext4_write_blocks(uint32_t blocknr, uint32_t blocks, const void *buf);
 extern uint32_t ext4_get_block_size(void);
+extern int ext4_extents_map_blocks(struct inode *inode, uint32_t lblock,
+				   uint32_t max_blocks, uint32_t *out_block,
+				   uint32_t *out_len);
 
 /* 简化的内存操作函数 */
 static void *simple_memcpy(void *d, const void *s, size_t n)
@@ -369,6 +373,42 @@ static ssize_t ext4_file_read(struct file *file, char *buf, size_t count, loff_t
 		size_t to_copy;
 		int ret;
 
+		to_copy = block_size - off_in_block;
+		if (to_copy > count) to_copy = count;
+
+		if (off_in_block == 0 &&
+		    to_copy == block_size &&
+		    S_ISREG(inode->i_mode) &&
+		    (ei->i_flags & EXT4_INODE_FLAG_EXTENTS)) {
+			uint32_t run_blocks = 0;
+			uint32_t max_blocks_by_count = count / block_size;
+			if (max_blocks_by_count > 64U) {
+				max_blocks_by_count = 64U;
+			}
+			if (ext4_extents_map_blocks(inode, block_idx, max_blocks_by_count,
+						    &blocknr, &run_blocks) < 0) {
+				free(block_buf);
+				return -1;
+			}
+			if (blocknr == 0 || run_blocks == 0) {
+				break;
+			}
+			if (run_blocks > 1) {
+				ret = ext4_read_blocks(blocknr, run_blocks, buf);
+			} else {
+				ret = ext4_read_block(blocknr, buf);
+			}
+			if (ret < 0) { free(block_buf); return -1; }
+			{
+				size_t advanced = (size_t)run_blocks * block_size;
+				read += (ssize_t)advanced;
+				buf += advanced;
+				*pos += (loff_t)advanced;
+				count -= advanced;
+				continue;
+			}
+		}
+
 		/* 通过直接块 + 间接块映射获取数据块号（不分配新块） */
 		if (ext4_get_data_block(inode, block_idx, 0, &blocknr, 0) < 0) {
 			free(block_buf);
@@ -377,8 +417,6 @@ static ssize_t ext4_file_read(struct file *file, char *buf, size_t count, loff_t
 		if (blocknr == 0) break;
 		ret = ext4_read_block(blocknr, block_buf);
 		if (ret < 0) { free(block_buf); return -1; }
-		to_copy = block_size - off_in_block;
-		if (to_copy > count) to_copy = count;
 		memcpy(buf, block_buf + off_in_block, to_copy);
 		read += (ssize_t)to_copy;
 		buf += to_copy;

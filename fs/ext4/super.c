@@ -636,6 +636,8 @@ static int ext4_fill_super(struct super_block *sb, void *data)
             return -1;
         }
         esb = (struct ext4_super_block *)(buf + 1024);
+    } else {
+        printf("检测到有效 Ext4 超级块，跳过初始化\n");
     }
     /* 校验组描述符大小，只接受 32 到 64 字节，其他情况视为不支持 */
     {

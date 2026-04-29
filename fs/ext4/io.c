@@ -51,6 +51,39 @@ int ext4_read_block(uint32_t blocknr, void *buf)
 	return ata_read_sectors(lba, (uint8_t)sectors_per_block, buf);
 }
 
+int ext4_read_blocks(uint32_t blocknr, uint32_t blocks, void *buf)
+{
+	uint32_t sectors_per_block;
+	uint32_t lba;
+	uint32_t total_sectors;
+	uint8_t *p;
+
+	if (!buf || blocks == 0) {
+		return -1;
+	}
+
+	sectors_per_block = ext4_block_size / ATA_SECTOR_SIZE;
+	if (sectors_per_block == 0) {
+		sectors_per_block = 1;
+	}
+	lba = blocknr * sectors_per_block;
+	total_sectors = blocks * sectors_per_block;
+	p = (uint8_t *)buf;
+
+	/* ATA 扇区计数是 8 bit，每次最多 255 扇区，分批提交。 */
+	while (total_sectors > 0) {
+		uint8_t chunk = (total_sectors > 255U) ? 255U : (uint8_t)total_sectors;
+		if (ata_read_sectors(lba, chunk, p) < 0) {
+			return -1;
+		}
+		lba += chunk;
+		p += (uint32_t)chunk * ATA_SECTOR_SIZE;
+		total_sectors -= chunk;
+	}
+
+	return 0;
+}
+
 /**
  * ext4_write_block - 写入一个块
  * @blocknr: 块号
