@@ -41,7 +41,7 @@ static void *simple_memcpy(void *d, const void *s, size_t n)
 #define memcpy simple_memcpy
 
 /* 简化的内存分配（使用静态池） */
-#define MAX_MALLOC 4096
+#define MAX_MALLOC BLOCK_SIZE
 #define MAX_MALLOC_BLOCKS 4
 static char malloc_pool[MAX_MALLOC_BLOCKS][MAX_MALLOC];
 static int malloc_used[MAX_MALLOC_BLOCKS];

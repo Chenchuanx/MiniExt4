@@ -61,7 +61,7 @@ static void *simple_memmove(void *d, const void *s, size_t n)
 #define memcmp simple_memcmp
 #define memmove simple_memmove
 
-#define MAX_MALLOC 4096
+#define MAX_MALLOC BLOCK_SIZE
 #define MAX_MALLOC_BLOCKS 8
 static char malloc_pool[MAX_MALLOC_BLOCKS][MAX_MALLOC];
 static int malloc_used[MAX_MALLOC_BLOCKS];

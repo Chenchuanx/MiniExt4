@@ -44,7 +44,7 @@ static void *simple_memcpy(void *dest, const void *src, size_t n)
 #define memcpy simple_memcpy
 
 /* 简化的内存分配（使用静态池，避免依赖标准库） */
-#define MAX_MALLOC_SIZE 4096
+#define MAX_MALLOC_SIZE 65536
 #define MAX_MALLOC_BLOCKS 256
 static char malloc_pool[MAX_MALLOC_BLOCKS][MAX_MALLOC_SIZE];
 static int malloc_used[MAX_MALLOC_BLOCKS];
@@ -79,9 +79,49 @@ static void simple_free(void *ptr)
 #define malloc simple_malloc
 #define free simple_free
 
-/* 块组游标表可能较大（每组 4 字节），需大于单块 ext4 位图缓冲常见尺寸 */
-#undef MAX_MALLOC_SIZE
-#define MAX_MALLOC_SIZE 65536
+/* MAX_MALLOC_SIZE 需覆盖 block_size 缓冲及按组游标表（groups_count * 4）。 */
+
+/* 主超级块位置：
+ * - block_size == 1024: block 1, offset 0
+ * - block_size  > 1024: block 0, offset 1024 */
+static uint32_t ext4_primary_sb_blocknr(uint32_t block_size)
+{
+	return (block_size == 1024U) ? 1U : 0U;
+}
+
+static uint32_t ext4_primary_sb_offset(uint32_t block_size)
+{
+	return (block_size == 1024U) ? 0U : 1024U;
+}
+
+/* 将块大小转换为 ext4 s_log_block_size（block_size = 1024 << log） */
+static int ext4_block_size_to_log(uint32_t block_size, uint32_t *out_log)
+{
+	uint32_t v;
+	uint32_t log = 0;
+
+	if (!out_log) {
+		return -1;
+	}
+	if (block_size < EXT4_MIN_BLOCK_SIZE || block_size > EXT4_MAX_BLOCK_SIZE) {
+		return -1;
+	}
+	/* 仅支持 2 的幂，且最小 1024 */
+	if ((block_size & (block_size - 1U)) != 0U) {
+		return -1;
+	}
+
+	v = block_size >> EXT4_MIN_BLOCK_LOG_SIZE; /* /1024 */
+	if (v == 0) {
+		return -1;
+	}
+	while (v > 1U) {
+		v >>= 1;
+		log++;
+	}
+	*out_log = log;
+	return 0;
+}
 
 /* 释放挂载过程中分配的 sbi 附属缓冲（不含 flush，调用方应先 balloc_flush） */
 static void ext4_destroy_sbi(struct ext4_sb_info *sbi)
@@ -204,10 +244,17 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     uint32_t groups_count;
     uint32_t first_data_block;
     uint32_t inode_size = 256;  /* Ext4 默认 inode 大小 256 字节 */
+    uint32_t log_block_size;
+    uint32_t sb_blocknr;
+    uint32_t sb_offset;
     int ret;
     struct ext4_super_block esb_backup;
     
     /* 设置块大小 */
+    if (ext4_block_size_to_log(block_size, &log_block_size) < 0) {
+        printf("ext4_mkfs: 不支持的块大小\n");
+        return -1;
+    }
     ext4_set_block_size(block_size);
     
     /* 计算文件系统参数 */
@@ -233,15 +280,17 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     }
     memset(buf, 0, buf_size);
     
-    /* 读取块 0（包含 boot sector 和 superblock） */
-    ret = ext4_read_block(0, buf);
+    /* 读取主 superblock 所在块（保留该块内其余区域） */
+    sb_blocknr = ext4_primary_sb_blocknr(block_size);
+    sb_offset = ext4_primary_sb_offset(block_size);
+    ret = ext4_read_block(sb_blocknr, buf);
     if (ret < 0) {
         free(buf);
         return -1;
     }
     
-    /* 初始化 superblock（偏移 1024 字节） */
-    esb = (struct ext4_super_block *)(buf + 1024);
+    /* 初始化 superblock */
+    esb = (struct ext4_super_block *)(buf + sb_offset);
     memset(esb, 0, sizeof(*esb));
     
     /* 填充 superblock 基本字段 */
@@ -251,7 +300,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_free_inodes_count = esb->s_inodes_count - 10;  /* 减去保留 inode */
     /* s_free_blocks_count_lo 会在后面根据实际计算的系统块数更新 */
     esb->s_first_data_block = first_data_block;
-    esb->s_log_block_size = (block_size == 1024) ? 0 : (block_size == 2048) ? 1 : 2;  /* 简化 */
+    esb->s_log_block_size = log_block_size;
     /* s_log_cluster_size 应等于 s_log_block_size */
     esb->s_log_cluster_size = esb->s_log_block_size;
     esb->s_blocks_per_group = blocks_per_group;
@@ -337,8 +386,8 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
         esb->s_free_blocks_count_lo = total_blocks - esb->s_r_blocks_count_lo - system_blocks_precalc;
     }
     
-    /* 写入 superblock */
-    ret = ext4_write_block(0, buf);
+    /* 写入主 superblock */
+    ret = ext4_write_block(sb_blocknr, buf);
     if (ret < 0) {
         free(buf);
         return -1;
@@ -575,29 +624,34 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     struct ext4_super_block *esb;
     struct ext4_sb_info *sbi;
     char *buf;
-    uint32_t block_size = 4096;  /* 默认 4KB */
+    uint32_t block_size = BLOCK_SIZE;  /* 默认块大小由宏控制 */
+    uint32_t sb_blocknr;
+    uint32_t sb_offset;
     uint32_t sb_log_block_size = 0;
     uint8_t sb_uuid[16];
     int ret;
     
     (void)data;
     
-    /* 分配临时缓冲区（读取第一个块，包含 superblock） */
-    buf = (char *)malloc(4096);  /* 假设最大块大小 4KB */
+    /* 分配临时缓冲区（读取主 superblock 所在块） */
+    buf = (char *)malloc(BLOCK_SIZE);  /* 假设最大块大小 4KB */
     if (!buf) {
         return -1;
     }
     
-    /* 先读取块 0（假设 superblock 在块 0，实际可能在块 1） */
+    sb_blocknr = ext4_primary_sb_blocknr(block_size);
+    sb_offset = ext4_primary_sb_offset(block_size);
+
+    /* 先读取主 superblock */
     ext4_set_block_size(block_size);
-    ret = ext4_read_block(0, buf);  /* 读取块 0 */
+    ret = ext4_read_block(sb_blocknr, buf);
     if (ret < 0) {
         free(buf);
         return -1;
     }
     
-    /* 解析 superblock（偏移 1024 字节） */
-    esb = (struct ext4_super_block *)(buf + 1024);
+    /* 解析 superblock */
+    esb = (struct ext4_super_block *)(buf + sb_offset);
     
     /* 检查魔数，如果不存在则初始化文件系统 */
     if (esb->s_magic != EXT4_SUPER_MAGIC) {
@@ -629,13 +683,13 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         printf("Ext4 磁盘结构初始化完成\n");
         
         /* 重新读取 superblock */
-        ret = ext4_read_block(0, buf);
+        ret = ext4_read_block(sb_blocknr, buf);
         if (ret < 0) {
             printf("ext4: 初始化后重新读取超级块失败\n");
             free(buf);
             return -1;
         }
-        esb = (struct ext4_super_block *)(buf + 1024);
+        esb = (struct ext4_super_block *)(buf + sb_offset);
     } else {
         printf("检测到有效 Ext4 超级块，跳过初始化\n");
     }
@@ -1041,6 +1095,8 @@ int ext4_sync_super_free_counts(struct super_block *sb)
 	char *sb_buf;
 	char *gd_buf;
 	uint32_t block_size;
+	uint32_t sb_blocknr;
+	uint32_t sb_offset;
 	uint32_t gd_base;
 	uint32_t free_inodes;
 	uint64_t free_blocks64;
@@ -1054,6 +1110,8 @@ int ext4_sync_super_free_counts(struct super_block *sb)
 	}
 
 	block_size = sbi->s_block_size;
+	sb_blocknr = ext4_primary_sb_blocknr(block_size);
+	sb_offset = ext4_primary_sb_offset(block_size);
 	sb_buf = (char *)malloc(block_size);
 	if (!sb_buf) {
 		return -1;
@@ -1064,14 +1122,14 @@ int ext4_sync_super_free_counts(struct super_block *sb)
 		return -1;
 	}
 
-	ret = ext4_read_block(0, sb_buf);
+	ret = ext4_read_block(sb_blocknr, sb_buf);
 	if (ret < 0) {
 		free(gd_buf);
 		free(sb_buf);
 		return -1;
 	}
 
-	esb = (struct ext4_super_block *)(sb_buf + 1024);
+	esb = (struct ext4_super_block *)(sb_buf + sb_offset);
 	free_blocks64 = 0;
 	free_inodes = 0;
 	gd_base = sbi->s_first_data_block + 1;
@@ -1118,7 +1176,7 @@ int ext4_sync_super_free_counts(struct super_block *sb)
 	esb->s_free_blocks_count_hi = free_blocks_hi;
 	esb->s_free_inodes_count = free_inodes;
 
-	ret = ext4_write_block(0, sb_buf);
+	ret = ext4_write_block(sb_blocknr, sb_buf);
 	free(gd_buf);
 	free(sb_buf);
 	return ret < 0 ? -1 : 0;

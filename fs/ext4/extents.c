@@ -50,7 +50,7 @@ static void *simple_memcpy(void *dest, const void *src, size_t n)
 #define memcpy simple_memcpy
 
 /* 简化的内存分配（使用静态池，避免依赖标准库） */
-#define MAX_MALLOC_SIZE 4096
+#define MAX_MALLOC_SIZE BLOCK_SIZE
 #define MAX_MALLOC_BLOCKS 8
 static char malloc_pool[MAX_MALLOC_BLOCKS][MAX_MALLOC_SIZE];
 static int malloc_used[MAX_MALLOC_BLOCKS];
@@ -229,7 +229,9 @@ static int ext4_extents_insert(struct ext4_extent_header *eh,
 	struct ext4_extent *extents;
 	uint32_t entries;
 	uint32_t max;
+	int insert_pos;
 	int i;
+	uint64_t new_start;
 
 	if (!eh || !new_ex) {
 		return -1;
@@ -247,55 +249,72 @@ static int ext4_extents_insert(struct ext4_extent_header *eh,
 		return -1;
 	}
 
-	/* 首先尝试与相邻 extent 合并，减少碎片和条目数量 */
-	for (i = 0; i < (int)entries; i++) {
-		uint32_t ee_block = extents[i].ee_block;
-		uint32_t ee_len   = extents[i].ee_len;
-		uint64_t ee_start = ((uint64_t)extents[i].ee_start_hi << 32) |
-				    (uint64_t)extents[i].ee_start_lo;
-		uint64_t new_start = ((uint64_t)new_ex->ee_start_hi << 32) |
-				     (uint64_t)new_ex->ee_start_lo;
+	/* 找到按逻辑块号排序的插入位置。 */
+	insert_pos = (int)entries;
+	while (insert_pos > 0 && extents[insert_pos - 1].ee_block > new_ex->ee_block) {
+		insert_pos--;
+	}
 
-		/* 尾部相邻： [ee_block, ee_block+ee_len-1] 后面紧跟 new_ex */
-		if (ee_block + ee_len == new_ex->ee_block &&
-		    ee_start + ee_len == new_start) {
-			uint32_t merged_len = (uint32_t)ee_len + (uint32_t)new_ex->ee_len;
-			if (merged_len > EXT4_EXT_INIT_MAX_LEN) {
-				continue;
-			}
-			extents[i].ee_len = (uint16_t)merged_len;
-			return 0;
-		}
+	/* 只检查插入点两侧邻居即可判定是否可合并，避免全表线性扫描。 */
+	new_start = ext4_extent_pblock(new_ex);
+	if (insert_pos > 0) {
+		struct ext4_extent *left = &extents[insert_pos - 1];
+		uint64_t left_start = ext4_extent_pblock(left);
+		uint32_t merged_len;
 
-		/* 头部相邻：new_ex 在前，紧挨着当前 extent */
-		if (new_ex->ee_block + new_ex->ee_len == ee_block &&
-		    new_start + new_ex->ee_len == ee_start) {
-			uint32_t merged_len = (uint32_t)ee_len + (uint32_t)new_ex->ee_len;
-			if (merged_len > EXT4_EXT_INIT_MAX_LEN) {
-				continue;
+		if (left->ee_block + left->ee_len == new_ex->ee_block &&
+		    left_start + left->ee_len == new_start) {
+			merged_len = (uint32_t)left->ee_len + (uint32_t)new_ex->ee_len;
+			if (merged_len <= EXT4_EXT_INIT_MAX_LEN) {
+				left->ee_len = (uint16_t)merged_len;
+
+				/* 合并到左邻后，再尝试与右邻融合，进一步减少条目数。 */
+				if (insert_pos < (int)entries) {
+					struct ext4_extent *right = &extents[insert_pos];
+					uint64_t merged_start = ext4_extent_pblock(left);
+					if (left->ee_block + left->ee_len == right->ee_block &&
+					    merged_start + left->ee_len == ext4_extent_pblock(right)) {
+						uint32_t total_len = (uint32_t)left->ee_len + (uint32_t)right->ee_len;
+						if (total_len <= EXT4_EXT_INIT_MAX_LEN) {
+							left->ee_len = (uint16_t)total_len;
+							for (i = insert_pos; i < (int)entries - 1; i++) {
+								extents[i] = extents[i + 1];
+							}
+							eh->eh_entries = (uint16_t)(entries - 1);
+						}
+					}
+				}
+				return 0;
 			}
-			extents[i].ee_block    = new_ex->ee_block;
-			extents[i].ee_start_lo = new_ex->ee_start_lo;
-			extents[i].ee_start_hi = new_ex->ee_start_hi;
-			extents[i].ee_len      = (uint16_t)merged_len;
-			return 0;
 		}
 	}
 
-	/* 不能合并时，按逻辑块号有序插入 */
+	if (insert_pos < (int)entries) {
+		struct ext4_extent *right = &extents[insert_pos];
+		uint32_t merged_len;
+
+		if (new_ex->ee_block + new_ex->ee_len == right->ee_block &&
+		    new_start + new_ex->ee_len == ext4_extent_pblock(right)) {
+			merged_len = (uint32_t)right->ee_len + (uint32_t)new_ex->ee_len;
+			if (merged_len <= EXT4_EXT_INIT_MAX_LEN) {
+				right->ee_block = new_ex->ee_block;
+				right->ee_start_lo = new_ex->ee_start_lo;
+				right->ee_start_hi = new_ex->ee_start_hi;
+				right->ee_len = (uint16_t)merged_len;
+				return 0;
+			}
+		}
+	}
+
+	/* 不能合并时，按逻辑块号有序插入。 */
 	if (entries == max) {
-		/* 节点已满：当前简化实现直接报错（不做 B+Tree 分裂） */
-		// printf("MiniExt4: extent node full, cannot insert new extent\n");
 		return -1;
 	}
 
-	/* 找到插入位置：保持按 ee_block 升序 */
-	i = (int)entries;
-	while (i > 0 && extents[i - 1].ee_block > new_ex->ee_block) {
+	for (i = (int)entries; i > insert_pos; i--) {
 		extents[i] = extents[i - 1];
-		i--;
 	}
-	extents[i] = *new_ex;
+	extents[insert_pos] = *new_ex;
 	eh->eh_entries = (uint16_t)(entries + 1);
 
 	return 0;

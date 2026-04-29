@@ -12,6 +12,8 @@
 extern "C" {
 #endif
 
+#define BLOCK_SIZE 4096
+
 /* Ext4 魔数 */
 #define EXT4_SUPER_MAGIC 0xEF53
 
