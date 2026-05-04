@@ -147,6 +147,7 @@ static int ext4_dir_get_blocknr(struct inode *dir, uint32_t lblock,
 				uint32_t *out_blocknr)
 {
 	struct ext4_inode_info *ei;
+	uint32_t block_size = ext4_get_block_size();
 
 	if (!dir || !out_blocknr) {
 		return -1;
@@ -169,18 +170,395 @@ static int ext4_dir_get_blocknr(struct inode *dir, uint32_t lblock,
 		return 0;
 	}
 
-	/* 未开启 EXTENTS：沿用传统直接块数组 i_block[0..11] */
-	if (lblock >= 12) {
+	/* 未开启 EXTENTS：直接块 + 一级间接块。 */
+	if (lblock < 12) {
+		if (ei->i_block[lblock] == 0) {
+			return -1;
+		}
+		*out_blocknr = ei->i_block[lblock];
+		return 0;
+	}
+	{
+		uint32_t idx = lblock - 12;
+		uint32_t per_indirect;
+		uint32_t iblk;
+		char *ibuf;
+		uint32_t *ents;
+		uint32_t phys;
+
+		if (block_size == 0 || (block_size & 3) != 0) {
+			return -1;
+		}
+		per_indirect = block_size / 4;
+		if (idx >= per_indirect) {
+			return -1;
+		}
+		iblk = ei->i_block[12];
+		if (iblk == 0) {
+			return -1;
+		}
+		ibuf = (char *)malloc(block_size);
+		if (!ibuf) {
+			return -1;
+		}
+		if (ext4_read_block(iblk, ibuf) < 0) {
+			free(ibuf);
+			return -1;
+		}
+		ents = (uint32_t *)ibuf;
+		phys = le32_to_cpu(ents[idx]);
+		free(ibuf);
+		if (phys == 0) {
+			return -1;
+		}
+		*out_blocknr = phys;
+		return 0;
+	}
+}
+
+static int ext4_dir_set_blocknr(struct inode *dir, uint32_t lblock, uint32_t phys)
+{
+	struct ext4_inode_info *ei = (struct ext4_inode_info *)dir->i_private;
+	struct super_block *sb = dir->i_sb;
+	uint32_t block_size = ext4_get_block_size();
+	uint32_t per_indirect;
+	uint32_t idx;
+	uint32_t iblk;
+	char *ibuf;
+	uint32_t *ents;
+
+	if (!ei || !sb || phys == 0) {
 		return -1;
 	}
-	if (ei->i_block[lblock] == 0) {
+	if (lblock < 12) {
+		ei->i_block[lblock] = phys;
+		return 0;
+	}
+	if (ei->i_flags & EXT4_INODE_FLAG_EXTENTS) {
 		return -1;
 	}
-	*out_blocknr = ei->i_block[lblock];
+	if (block_size == 0 || (block_size & 3) != 0) {
+		return -1;
+	}
+	per_indirect = block_size / 4;
+	idx = lblock - 12;
+	if (idx >= per_indirect) {
+		return -1;
+	}
+
+	iblk = ei->i_block[12];
+	if (iblk == 0) {
+		iblk = ext4_new_block(sb);
+		if (iblk == 0) {
+			return -1;
+		}
+		ei->i_block[12] = iblk;
+		ibuf = (char *)malloc(block_size);
+		if (!ibuf) {
+			ei->i_block[12] = 0;
+			(void)ext4_free_block(sb, iblk);
+			return -1;
+		}
+		memset(ibuf, 0, block_size);
+		/* i_blocks 统计需要包含一级间接块本身。 */
+		dir->i_blocks += (block_size / 512);
+	} else {
+		ibuf = (char *)malloc(block_size);
+		if (!ibuf) {
+			return -1;
+		}
+		if (ext4_read_block(iblk, ibuf) < 0) {
+			free(ibuf);
+			return -1;
+		}
+	}
+	ents = (uint32_t *)ibuf;
+	ents[idx] = phys;
+	if (ext4_write_block(iblk, ibuf) < 0) {
+		free(ibuf);
+		return -1;
+	}
+	free(ibuf);
 	return 0;
 }
 
 /* HTree 实现在 fs/ext4/htree.c */
+struct ext4_dir_leaf_meta {
+	uint32_t lblk;
+	uint32_t max_hash;
+};
+
+static int ext4_dir_leaf_calc_max_hash(const struct inode *dir, const char *leaf,
+				       uint32_t block_size, uint32_t *out_max_hash)
+{
+	uint32_t off = 0;
+	uint32_t max_hash = 0;
+	int has = 0;
+	while (off < block_size) {
+		struct ext4_dir_entry *de = (struct ext4_dir_entry *)(leaf + off);
+		uint16_t rec = le16_to_cpu(de->rec_len);
+		uint16_t nl = (uint16_t)de->name_len;
+		uint32_t ino = le32_to_cpu(de->inode);
+		if (rec == 0 || (rec & 3) != 0 || off + rec > block_size) return -1;
+		if (ino != 0 && nl > 0) {
+			struct qstr q;
+			uint32_t h;
+			q.name = (const unsigned char *)de->name;
+			q.len = nl;
+			q.hash = 0;
+			h = ext4_htree_name_hash32(dir, &q);
+			if (!has || h > max_hash) max_hash = h;
+			has = 1;
+		}
+		off += rec;
+	}
+	*out_max_hash = has ? max_hash : 0;
+	return 0;
+}
+
+static void ext4_dir_refresh_size_blocks(struct inode *dir)
+{
+	struct ext4_inode_info *ei = (struct ext4_inode_info *)dir->i_private;
+	uint32_t block_size = ext4_get_block_size();
+	uint32_t max_lblocks = 12 + ((block_size && (block_size & 3) == 0) ? (block_size / 4) : 0);
+	uint32_t blk_idx;
+	uint32_t blocknr;
+	uint32_t highest = 0;
+	uint32_t data_cnt = 0;
+	int has = 0;
+
+	if (!ei || block_size == 0) return;
+	for (blk_idx = 0; blk_idx < max_lblocks; blk_idx++) {
+		if (ext4_dir_get_blocknr(dir, blk_idx, &blocknr) < 0) break;
+		highest = blk_idx;
+		data_cnt++;
+		has = 1;
+	}
+	if (has) {
+		dir->i_size = (uint64_t)block_size * (uint64_t)(highest + 1);
+	} else {
+		dir->i_size = 0;
+	}
+	dir->i_blocks = (uint64_t)(block_size / 512) * (uint64_t)data_cnt;
+	if (ei->i_block[12] != 0) dir->i_blocks += (block_size / 512);
+}
+
+/* 把当前线性目录重建为 HTree。支持已扩展为多块的线性目录。 */
+static int ext4_dir_upgrade_to_htree(struct inode *dir)
+{
+	struct ext4_inode_info *ei = (struct ext4_inode_info *)dir->i_private;
+	struct super_block *sb = dir->i_sb;
+	struct ext4_sb_info *sbi;
+	uint32_t block_size = ext4_get_block_size();
+	uint32_t max_lblocks;
+	uint32_t old_last = 0;
+	uint32_t old_cnt = 0;
+	uint32_t root_phys = 0;
+	uint32_t new_leaf_lblk = 0;
+	uint32_t new_leaf_phys = 0;
+	uint32_t parent_ino = (uint32_t)dir->i_ino;
+	int new_leaf_mapped = 0;
+	char *root_old = (char *)0;
+	char *root_new = (char *)0;
+	char *leaf_buf = (char *)0;
+	char *tmp_buf = (char *)0;
+	struct ext4_dir_leaf_meta *meta = (struct ext4_dir_leaf_meta *)0;
+	uint16_t rec1;
+	uint16_t rec2;
+	uint16_t dx_limit;
+	uint32_t meta_n;
+	uint32_t i;
+	int ret = -1;
+
+	if (!ei || !sb) return -1;
+	if (ei->i_flags & (EXT4_INODE_FLAG_INDEX | EXT4_INODE_FLAG_EXTENTS)) return -1;
+	if (block_size == 0 || (block_size & 3) != 0) return -1;
+	sbi = (struct ext4_sb_info *)sb->s_fs_info;
+	max_lblocks = 12 + (block_size / 4);
+
+	for (i = 0; i < max_lblocks; i++) {
+		uint32_t b;
+		if (ext4_dir_get_blocknr(dir, i, &b) < 0) break;
+		old_last = i;
+		old_cnt++;
+	}
+	if (old_cnt == 0) return -1;
+	if (ext4_dir_get_blocknr(dir, 0, &root_phys) < 0) return -1;
+
+	new_leaf_lblk = old_last + 1;
+	if (new_leaf_lblk >= max_lblocks) return -1;
+	new_leaf_phys = ext4_new_block(sb);
+	if (new_leaf_phys == 0) return -1;
+	if (ext4_dir_set_blocknr(dir, new_leaf_lblk, new_leaf_phys) < 0) {
+		(void)ext4_free_block(sb, new_leaf_phys);
+		return -1;
+	}
+	new_leaf_mapped = 1;
+
+	root_old = (char *)malloc(block_size);
+	root_new = (char *)malloc(block_size);
+	leaf_buf = (char *)malloc(block_size);
+	tmp_buf = (char *)malloc(block_size);
+	if (!root_old || !root_new || !leaf_buf || !tmp_buf) goto out;
+	if (ext4_read_block(root_phys, root_old) < 0) goto out;
+	{
+		struct ext4_dir_entry *dotdot = (struct ext4_dir_entry *)(root_old + EXT4_DIR_REC_LEN(1));
+		if (le16_to_cpu(dotdot->rec_len) >= EXT4_DIR_REC_LEN(2)) {
+			parent_ino = le32_to_cpu(dotdot->inode);
+		}
+	}
+
+	memset(leaf_buf, 0, block_size);
+	{
+		struct ext4_dir_entry *tail = (struct ext4_dir_entry *)leaf_buf;
+		tail->inode = 0;
+		tail->rec_len = (uint16_t)block_size;
+		tail->name_len = 0;
+		tail->file_type = 0;
+	}
+	/* 把 block0 中除 "."/".." 外的目录项迁移到新叶子块。 */
+	{
+		uint32_t off = 0;
+		uint32_t de_off = 0;
+		while (off < block_size) {
+			struct ext4_dir_entry *de = (struct ext4_dir_entry *)(root_old + off);
+			uint16_t rec = le16_to_cpu(de->rec_len);
+			uint16_t nl = (uint16_t)de->name_len;
+			uint32_t ino = le32_to_cpu(de->inode);
+			int is_dot = 0;
+			struct qstr q;
+			if (rec == 0 || (rec & 3) != 0 || off + rec > block_size) goto out;
+			if (ino != 0 && nl > 0) {
+				if (nl == 1 && de->name[0] == '.') is_dot = 1;
+				if (nl == 2 && de->name[0] == '.' && de->name[1] == '.') is_dot = 1;
+				if (!is_dot) {
+					q.name = (const unsigned char *)de->name;
+					q.len = nl;
+					q.hash = 0;
+					if (ext4_htree_try_insert_leaf(leaf_buf, block_size, &q, ino,
+								      (uint16_t)EXT4_DIR_REC_LEN((int)nl), &de_off) < 0) {
+						goto out;
+					}
+				}
+			}
+			off += rec;
+		}
+	}
+	if (ext4_write_block(new_leaf_phys, leaf_buf) < 0) goto out;
+
+	/* 统计叶子集合：旧 block1..blockN + 新迁移叶子。 */
+	meta_n = old_last + 1; /* 去掉 root(0) 后再 +1 个新叶子 */
+	meta = (struct ext4_dir_leaf_meta *)malloc(sizeof(*meta) * meta_n);
+	if (!meta) goto out;
+	for (i = 0; i < old_last; i++) {
+		uint32_t lblk = i + 1;
+		uint32_t phys;
+		if (ext4_dir_get_blocknr(dir, lblk, &phys) < 0) goto out;
+		if (ext4_read_block(phys, tmp_buf) < 0) goto out;
+		if (ext4_dir_leaf_calc_max_hash(dir, tmp_buf, block_size, &meta[i].max_hash) < 0) goto out;
+		meta[i].lblk = lblk;
+	}
+	meta[meta_n - 1].lblk = new_leaf_lblk;
+	if (ext4_read_block(new_leaf_phys, tmp_buf) < 0) goto out;
+	if (ext4_dir_leaf_calc_max_hash(dir, tmp_buf, block_size, &meta[meta_n - 1].max_hash) < 0) goto out;
+
+	/* 按最大哈希升序排列叶子。 */
+	for (i = 0; i + 1 < meta_n; i++) {
+		uint32_t j;
+		for (j = i + 1; j < meta_n; j++) {
+			if (meta[i].max_hash > meta[j].max_hash) {
+				struct ext4_dir_leaf_meta t = meta[i];
+				meta[i] = meta[j];
+				meta[j] = t;
+			}
+		}
+	}
+
+	/* 重写 block0 为 HTree root。 */
+	memset(root_new, 0, block_size);
+	{
+		struct ext4_dir_entry *de = (struct ext4_dir_entry *)root_new;
+		struct ext4_dx_root_info *dx_info;
+		struct ext4_dx_countlimit *dx_cl;
+		struct ext4_dx_entry *dx_entries;
+
+		rec1 = (uint16_t)EXT4_DIR_REC_LEN(1);
+		de->inode = (uint32_t)dir->i_ino;
+		de->rec_len = rec1;
+		de->name_len = 1;
+		de->file_type = 2;
+		de->name[0] = '.';
+
+		de = (struct ext4_dir_entry *)(root_new + rec1);
+		rec2 = (uint16_t)(block_size - rec1);
+		de->inode = parent_ino;
+		de->rec_len = rec2;
+		de->name_len = 2;
+		de->file_type = 2;
+		de->name[0] = '.';
+		de->name[1] = '.';
+
+		dx_info = (struct ext4_dx_root_info *)(root_new + rec1 + EXT4_DIR_REC_LEN(2));
+		dx_cl = (struct ext4_dx_countlimit *)(dx_info + 1);
+		dx_entries = (struct ext4_dx_entry *)dx_cl;
+		dx_limit = (uint16_t)((block_size -
+				      (uint16_t)(rec1 + EXT4_DIR_REC_LEN(2) +
+						 sizeof(struct ext4_dx_root_info))) /
+				     (uint16_t)sizeof(struct ext4_dx_entry));
+		if (meta_n == 0 || meta_n > dx_limit) goto out;
+
+		dx_info->reserved_zero = 0;
+		dx_info->hash_version = (uint8_t)(sbi ? sbi->s_def_hash_version : EXT4_DX_HASH_LEGACY);
+		dx_info->info_length = (uint8_t)sizeof(struct ext4_dx_root_info);
+		dx_info->indirect_levels = 0;
+		dx_info->unused_flags = 0;
+		dx_cl->limit = dx_limit;
+		dx_cl->count = (uint16_t)meta_n;
+		for (i = 0; i < meta_n; i++) {
+			dx_entries[i].block = meta[i].lblk;
+			if (i > 0) {
+				uint32_t h = meta[i - 1].max_hash;
+				if (h != 0xffffffffU) h += 1;
+				dx_entries[i].hash = h;
+			}
+		}
+	}
+	if (ext4_write_block(root_phys, root_new) < 0) goto out;
+
+	ei->i_flags |= EXT4_INODE_FLAG_INDEX;
+	ext4_dir_refresh_size_blocks(dir);
+	if (dir->i_sb && dir->i_sb->s_op && dir->i_sb->s_op->write_inode) {
+		(void)dir->i_sb->s_op->write_inode(dir, (struct writeback_control *)0);
+	}
+	ext4_dir_index_invalidate(dir);
+	ret = 0;
+
+out:
+	if (ret < 0) {
+		/* 升级失败时尽量回滚新增叶子映射。 */
+		uint32_t iblk = ei ? ei->i_block[12] : 0;
+		if (new_leaf_mapped && ei && new_leaf_lblk < 12) ei->i_block[new_leaf_lblk] = 0;
+		if (new_leaf_mapped && iblk != 0 && new_leaf_lblk >= 12) {
+			char *ib = (char *)malloc(block_size);
+			if (ib && ext4_read_block(iblk, ib) == 0) {
+				uint32_t *ents = (uint32_t *)ib;
+				uint32_t idx = new_leaf_lblk - 12;
+				if (idx < (block_size / 4)) {
+					ents[idx] = 0;
+					(void)ext4_write_block(iblk, ib);
+				}
+			}
+			if (ib) free(ib);
+		}
+		if (new_leaf_phys != 0) (void)ext4_free_block(sb, new_leaf_phys);
+	}
+	if (root_old) free(root_old);
+	if (root_new) free(root_new);
+	if (leaf_buf) free(leaf_buf);
+	if (tmp_buf) free(tmp_buf);
+	if (meta) free(meta);
+	return ret;
+}
 
 /**
  * ext4_find_entry - 在目录中按名称查找目录项
@@ -337,6 +715,7 @@ int ext4_add_entry(struct inode *dir, const struct qstr *name, unsigned long ino
 	struct ext4_inode_info *ei = (struct ext4_inode_info *)dir->i_private;
 	struct super_block *sb = dir->i_sb;
 	uint32_t block_size = ext4_get_block_size();
+	uint32_t max_lblocks;
 	uint16_t rec_len = EXT4_DIR_REC_LEN(name->len);
 	char *buf;
 	uint32_t blk_idx;
@@ -417,11 +796,25 @@ int ext4_add_entry(struct inode *dir, const struct qstr *name, unsigned long ino
 	}
 
 	/* 非 HTree 目录：沿用原来的线性扫描逻辑 */
-	for (blk_idx = 0; blk_idx < 12; blk_idx++) {
+	if (ei->i_flags & EXT4_INODE_FLAG_EXTENTS) {
+		max_lblocks = 12;
+	} else {
+		max_lblocks = 12 + (block_size / 4);
+	}
+	for (blk_idx = 0; blk_idx < max_lblocks; blk_idx++) {
 		uint32_t blocknr = 0;
 		if (ext4_dir_get_blocknr(dir, blk_idx, &blocknr) < 0) {
 			struct ext4_dir_entry *free_de;
 			int allocated = 0;
+
+			/* Linux 类似策略：线性目录扩容前优先尝试转为索引目录。 */
+			if (!(ei->i_flags & (EXT4_INODE_FLAG_INDEX | EXT4_INODE_FLAG_EXTENTS)) &&
+			    blk_idx >= 1) {
+				if (ext4_dir_upgrade_to_htree(dir) == 0) {
+					free(buf);
+					return ext4_add_entry(dir, name, ino);
+				}
+			}
 
 			/*
 			 * 目录块不足时在线扩容：
@@ -442,7 +835,11 @@ int ext4_add_entry(struct inode *dir, const struct qstr *name, unsigned long ino
 					free(buf);
 					return -1;
 				}
-				ei->i_block[blk_idx] = blocknr;
+				if (ext4_dir_set_blocknr(dir, blk_idx, blocknr) < 0) {
+					(void)ext4_free_block(sb, blocknr);
+					free(buf);
+					return -1;
+				}
 				allocated = 1;
 			}
 

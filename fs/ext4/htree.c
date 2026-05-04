@@ -89,7 +89,7 @@ static inline uint32_t le32_to_cpu(uint32_t x) { return x; }
 static inline uint16_t le16_to_cpu(uint16_t x) { return x; }
 
 #define EXT4_DIR_REC_LEN(name_len) (((name_len) + 8 + 3) & ~3)
-#define EXT4_HTREE_SPLIT_MAX_NAMES 256
+#define EXT4_HTREE_SPLIT_MAX_NAMES 512
 
 struct ext4_htree_leaf_item {
 	uint32_t hash;
@@ -97,6 +97,9 @@ struct ext4_htree_leaf_item {
 	uint8_t name_len;
 	char name[255];
 };
+
+/* 分裂过程使用共享缓冲，避免在栈上放大数组导致大目录场景不稳定。 */
+static struct ext4_htree_leaf_item ext4_htree_split_items[EXT4_HTREE_SPLIT_MAX_NAMES];
 
 static uint32_t dx_hack_hash_signed(const char *name, int len)
 {
@@ -128,6 +131,7 @@ static int ext4_dir_get_blocknr(struct inode *dir, uint32_t lblock,
 				uint32_t *out_blocknr)
 {
 	struct ext4_inode_info *ei;
+	uint32_t block_size = ext4_get_block_size();
 
 	if (!dir || !out_blocknr) return -1;
 	ei = (struct ext4_inode_info *)dir->i_private;
@@ -141,9 +145,34 @@ static int ext4_dir_get_blocknr(struct inode *dir, uint32_t lblock,
 		*out_blocknr = phys;
 		return 0;
 	}
-	if (lblock >= 12 || ei->i_block[lblock] == 0) return -1;
-	*out_blocknr = ei->i_block[lblock];
-	return 0;
+	if (lblock < 12) {
+		if (ei->i_block[lblock] == 0) return -1;
+		*out_blocknr = ei->i_block[lblock];
+		return 0;
+	}
+	{
+		uint32_t idx = lblock - 12;
+		uint32_t per_indirect;
+		uint32_t iblk;
+		char *ibuf;
+		uint32_t *ents;
+		uint32_t phys;
+
+		if (block_size == 0 || (block_size & 3) != 0) return -1;
+		per_indirect = block_size / 4;
+		if (idx >= per_indirect) return -1;
+		iblk = ei->i_block[12];
+		if (iblk == 0) return -1;
+		ibuf = (char *)malloc(block_size);
+		if (!ibuf) return -1;
+		if (ext4_read_block(iblk, ibuf) < 0) { free(ibuf); return -1; }
+		ents = (uint32_t *)ibuf;
+		phys = le32_to_cpu(ents[idx]);
+		free(ibuf);
+		if (phys == 0) return -1;
+		*out_blocknr = phys;
+		return 0;
+	}
 }
 
 uint32_t ext4_htree_name_hash32(const struct inode *dir, const struct qstr *name)
@@ -252,14 +281,82 @@ static int ext4_htree_find_dx_index_for_lblock(struct ext4_dx_entry *entries, in
 	return -1;
 }
 
-static int ext4_htree_alloc_lblock(struct ext4_inode_info *ei, uint32_t phys,
-				   int start_lblk, int *out_lblk)
+static int ext4_htree_alloc_lblock(struct super_block *sb, struct ext4_inode_info *ei,
+				   uint32_t phys, int start_lblk, int *out_lblk)
 {
 	int j;
+	uint32_t block_size;
+	uint32_t per_indirect;
+	uint32_t iblk;
+	char *ibuf;
+	uint32_t *ents;
+	uint32_t idx_start, idx;
+	if (!sb || !ei || !out_lblk || phys == 0) return -1;
 	for (j = start_lblk; j < 12; j++) {
 		if (ei->i_block[j] == 0) { ei->i_block[j] = phys; *out_lblk = j; return 0; }
 	}
+	block_size = ext4_get_block_size();
+	if (block_size == 0 || (block_size & 3) != 0) return -1;
+	per_indirect = block_size / 4;
+	idx_start = (start_lblk > 12) ? (uint32_t)(start_lblk - 12) : 0;
+	if (idx_start >= per_indirect) return -1;
+
+	iblk = ei->i_block[12];
+	if (iblk == 0) {
+		iblk = ext4_new_block(sb);
+		if (iblk == 0) return -1;
+		ei->i_block[12] = iblk;
+		ibuf = (char *)malloc(block_size);
+		if (!ibuf) { ei->i_block[12] = 0; (void)ext4_free_block(sb, iblk); return -1; }
+		memset(ibuf, 0, block_size);
+	} else {
+		ibuf = (char *)malloc(block_size);
+		if (!ibuf) return -1;
+		if (ext4_read_block(iblk, ibuf) < 0) { free(ibuf); return -1; }
+	}
+	ents = (uint32_t *)ibuf;
+	for (idx = idx_start; idx < per_indirect; idx++) {
+		if (le32_to_cpu(ents[idx]) == 0) {
+			ents[idx] = phys;
+			if (ext4_write_block(iblk, ibuf) < 0) { free(ibuf); return -1; }
+			*out_lblk = (int)(idx + 12);
+			free(ibuf);
+			return 0;
+		}
+	}
+	free(ibuf);
 	return -1;
+}
+
+static int ext4_htree_unmap_lblock(struct super_block *sb, struct ext4_inode_info *ei,
+				   int lblk)
+{
+	uint32_t block_size;
+	uint32_t per_indirect;
+	uint32_t idx;
+	uint32_t iblk;
+	char *ibuf;
+	uint32_t *ents;
+	if (!sb || !ei || lblk < 0) return -1;
+	if (lblk < 12) {
+		ei->i_block[lblk] = 0;
+		return 0;
+	}
+	block_size = ext4_get_block_size();
+	if (block_size == 0 || (block_size & 3) != 0) return -1;
+	per_indirect = block_size / 4;
+	idx = (uint32_t)(lblk - 12);
+	if (idx >= per_indirect) return -1;
+	iblk = ei->i_block[12];
+	if (iblk == 0) return -1;
+	ibuf = (char *)malloc(block_size);
+	if (!ibuf) return -1;
+	if (ext4_read_block(iblk, ibuf) < 0) { free(ibuf); return -1; }
+	ents = (uint32_t *)ibuf;
+	ents[idx] = 0;
+	if (ext4_write_block(iblk, ibuf) < 0) { free(ibuf); return -1; }
+	free(ibuf);
+	return 0;
 }
 
 int ext4_htree_pick_leaf_from_root(struct inode *dir, uint32_t block_size,
@@ -399,8 +496,23 @@ static void ext4_htree_refresh_dir_inode_size(struct inode *dir,
 	int j;
 	unsigned cnt = 0;
 	for (j = 0; j < 12; j++) if (ei->i_block[j] != 0) cnt = (unsigned)(j + 1);
+	if (ei->i_block[12] != 0) {
+		char *ibuf = (char *)malloc(block_size);
+		if (ibuf && ext4_read_block(ei->i_block[12], ibuf) == 0) {
+			uint32_t *ents = (uint32_t *)ibuf;
+			uint32_t per = block_size / 4;
+			uint32_t i;
+			for (i = 0; i < per; i++) {
+				if (le32_to_cpu(ents[i]) != 0) cnt = (unsigned)(12 + i + 1);
+			}
+		}
+		if (ibuf) free(ibuf);
+	}
 	dir->i_size = (uint64_t)block_size * (uint64_t)cnt;
 	dir->i_blocks = (uint64_t)(block_size / 512) * (uint64_t)cnt;
+	if (ei->i_block[12] != 0) {
+		dir->i_blocks += (uint64_t)(block_size / 512);
+	}
 }
 
 int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
@@ -417,11 +529,11 @@ int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
 	int target_cap, target_nent, target_phys;
 	uint32_t leaf_phys;
 	char *leaf_buf, *target_buf;
-	struct ext4_htree_leaf_item items[EXT4_HTREE_SPLIT_MAX_NAMES];
+	struct ext4_htree_leaf_item *items = ext4_htree_split_items;
 	int n, mid;
 	uint32_t new_phys;
 	int new_lblk;
-	uint32_t H_old, H_mid;
+	uint32_t H_mid;
 
 	if (ext4_htree_parse_root(root_buf, block_size, &info, &entries, &cap, &nent) < 0) return -1;
 	root_cl = (struct ext4_dx_countlimit *)(info + 1);
@@ -465,7 +577,7 @@ int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
 
 	new_phys = ext4_new_block(sb);
 	if (new_phys == 0) { if (target_buf != root_buf) free(target_buf); free(leaf_buf); return -1; }
-	if (ext4_htree_alloc_lblock(ei, new_phys, 1, &new_lblk) < 0) {
+	if (ext4_htree_alloc_lblock(sb, ei, new_phys, 1, &new_lblk) < 0) {
 		ext4_free_block(sb, new_phys);
 		if (target_buf != root_buf) free(target_buf);
 		free(leaf_buf);
@@ -473,7 +585,7 @@ int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
 	}
 	ext4_htree_pack_leaf(leaf_buf, block_size, items + mid, n - mid);
 	if (ext4_write_block(new_phys, leaf_buf) < 0) {
-		ei->i_block[new_lblk] = 0;
+		(void)ext4_htree_unmap_lblock(sb, ei, new_lblk);
 		ext4_free_block(sb, new_phys);
 		if (target_buf != root_buf) free(target_buf);
 		free(leaf_buf);
@@ -481,8 +593,7 @@ int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
 	}
 	free(leaf_buf);
 
-	H_mid = items[mid - 1].hash;
-	H_old = le32_to_cpu(target_entries[idx].hash);
+	H_mid = items[mid].hash;
 	if (target_nent + 1 > target_cap) {
 		if (target_buf == root_buf && info->indirect_levels == 0) {
 			char *node_buf = (char *)malloc(block_size);
@@ -494,7 +605,7 @@ int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
 
 			if (!node_buf) return -1;
 			node_phys = ext4_new_block(sb);
-			if (node_phys == 0 || ext4_htree_alloc_lblock(ei, node_phys, 1, &node_lblk) < 0) {
+			if (node_phys == 0 || ext4_htree_alloc_lblock(sb, ei, node_phys, 1, &node_lblk) < 0) {
 				if (node_phys) ext4_free_block(sb, node_phys);
 				free(node_buf);
 				return -1;
@@ -513,11 +624,11 @@ int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
 			dn->countlimit.limit = (uint16_t)((block_size - (uint32_t)sizeof(struct ext4_dx_node)) /
 						       (uint32_t)sizeof(struct ext4_dx_entry));
 			dn->countlimit.count = (uint16_t)(nent + 1);
-			ne = dn->entries;
+			ne = (struct ext4_dx_entry *)&dn->countlimit;
 			for (i = 0; i < nent; i++) ne[i] = entries[i];
 			if (idx + 1 < nent) memmove(ne + idx + 2, ne + idx + 1, (size_t)(nent - idx - 1) * sizeof(*ne));
-			ne[idx].hash = H_mid;
-			ne[idx + 1].hash = H_old;
+			/* entry[0].hash 与 count/limit 重叠，绝不能写。 */
+			if (idx + 1 > 0) ne[idx + 1].hash = H_mid;
 			ne[idx + 1].block = (uint32_t)new_lblk;
 			if (ext4_write_block(node_phys, node_buf) < 0) { free(node_buf); return -1; }
 			free(node_buf);
@@ -531,8 +642,8 @@ int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
 		}
 	} else {
 		if (idx + 1 < target_nent) memmove(target_entries + idx + 2, target_entries + idx + 1, (size_t)(target_nent - idx - 1) * sizeof(*target_entries));
-		target_entries[idx].hash = H_mid;
-		target_entries[idx + 1].hash = H_old;
+		/* entry[0].hash 与 count/limit 重叠，绝不能写。 */
+		if (idx + 1 > 0) target_entries[idx + 1].hash = H_mid;
 		target_entries[idx + 1].block = (uint32_t)new_lblk;
 		target_cl->count = (uint16_t)(target_nent + 1);
 		if (ext4_write_block(target_phys, target_buf) < 0) { if (target_buf != root_buf) free(target_buf); return -1; }

@@ -41,13 +41,13 @@ struct file {
 };
 
 /* 文件打开标志 */
-#define O_RDONLY	00000000
-#define O_WRONLY	00000001
-#define O_RDWR		00000002
-#define O_CREAT		00000100
-#define O_EXCL		00000200
-#define O_TRUNC		00001000
-#define O_APPEND	00002000
+#define O_RDONLY	00000000 /* 只读 */
+#define O_WRONLY	00000001 /* 只写 */
+#define O_RDWR		00000002 /* 读写 */
+#define O_CREAT		00000100 /* 创建 */
+#define O_EXCL		00000200 /* 排他创建 */
+#define O_TRUNC		00001000 /* 截断 */
+#define O_APPEND	00002000 /* 追加 */
 
 #endif /* _LINUX_FS_FILE_H */
 

@@ -925,6 +925,97 @@ static void cmd_test_churn(const int8_t *arg)
 	}
 }
 
+static void cmd_test_mkfiles(const int8_t *arg)
+{
+	if (!arg) {
+		printf((int8_t *)"test_mkfiles: 用法: test_mkfiles <路径> <文件数量>\n");
+		return;
+	}
+
+	const char *p = (const char *)arg;
+	char dir[128] = {0};
+	char s_count[24] = {0};
+	char s_extra[8] = {0};
+	char *outs[3] = {dir, s_count, s_extra};
+	int caps[3] = {(int)sizeof(dir), (int)sizeof(s_count), (int)sizeof(s_extra)};
+	uint64_t count64 = 0;
+	uint32_t count;
+	uint64_t created = 0;
+	uint64_t failed = 0;
+	int first_err = 0;
+	uint32_t start_ticks;
+	uint32_t end_ticks;
+	uint32_t elapsed_ticks;
+	uint32_t duration_ms;
+	uint32_t pit_hz;
+
+	for (int t = 0; t < 3; t++) {
+		int pos = 0;
+		while (*p == ' ' || *p == '\t') {
+			p++;
+		}
+		while (*p != '\0' && *p != ' ' && *p != '\t' && pos < caps[t] - 1) {
+			outs[t][pos++] = *p++;
+		}
+		outs[t][pos] = '\0';
+	}
+
+	if (dir[0] == '\0' || s_count[0] == '\0' || s_extra[0] != '\0') {
+		printf((int8_t *)"test_mkfiles: 用法: test_mkfiles <路径> <文件数量>\n");
+		return;
+	}
+	if (parse_u64_10(s_count, &count64) != PARSE_U64_OK || count64 == 0) {
+		printf((int8_t *)"test_mkfiles: 文件数量必须是十进制正整数\n");
+		return;
+	}
+	if (count64 > 200000ULL) {
+		printf((int8_t *)"test_mkfiles: 文件数量过大（最大 200000）\n");
+		return;
+	}
+
+	count = (uint32_t)count64;
+	pit_hz = pit_get_frequency_hz();
+	if (pit_hz == 0) {
+		pit_hz = 1000;
+	}
+	start_ticks = pit_get_ticks();
+
+	for (uint32_t i = 0; i < count; i++) {
+		char path[256];
+		int fd;
+
+		if (build_churn_path(path, (int)sizeof(path), dir, i) != 0) {
+			failed++;
+			if (first_err == 0) first_err = -EINVAL;
+			break;
+		}
+
+		fd = vfs_open(path, O_CREAT | O_WRONLY, 0644);
+		if (fd < 0) {
+			failed++;
+			if (first_err == 0) first_err = fd;
+			continue;
+		}
+		vfs_close(fd);
+		created++;
+	}
+
+	end_ticks = pit_get_ticks();
+	elapsed_ticks = end_ticks - start_ticks;
+	duration_ms = (elapsed_ticks * 1000u) / pit_hz;
+
+	printf((int8_t *)"test_mkfiles: 完成\n");
+	printf((int8_t *)"  created=", (unsigned long long)created);
+	printf((int8_t *)", failed=", (unsigned long long)failed);
+	printf((int8_t *)"\n  耗时 ", (unsigned int)duration_ms);
+	printf((int8_t *)"ms\n");
+	if (first_err != 0) {
+		printf((int8_t *)"  first_err=");
+		print_errno_value(first_err);
+		printf((int8_t *)"\n");
+	}
+}
+
 static void cmd_test_mkdir_deep(const int8_t *arg)
 {
 	if (!arg) {
@@ -1432,6 +1523,7 @@ const struct cmd_entry cmd_table[] = {
 	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},
 	{"test_read", cmd_test_read, "性能测试: test_read <路径>"},
 	{"test_churn", cmd_test_churn, "抖动测试: test_churn <路径> <轮次> <每轮文件数> <文件大小>"},
+	{"test_mkfiles", cmd_test_mkfiles, "目录测试: test_mkfiles <路径> <文件数量>"},
 	{"test_mkdir_deep", cmd_test_mkdir_deep, "目录测试: test_mkdir_deep <路径> <层数>"},
 	{0, 0, 0},
 };

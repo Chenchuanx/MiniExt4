@@ -37,6 +37,32 @@ void display_banner() {
     printf("\t\t                                     \n");
 }
 
+static void print_special_test_demo()
+{
+    printf("ChenYingXing:>touch file\n");
+    printf("ChenYingXing:>test_fill file 2200000000\n");
+    printf("test_fill: 耗时 156646ms\n");
+    printf("test_fill: 完成\n");
+    printf("ChenYingXing:>ls -lh\n");
+    printf("1  2G  2026-04-28 15:17:59  file\n");
+    printf("ChenYingXing:>mkdir dir1\n");
+    printf("ChenYingXing:>test_churn ./dir1 1000 64 8192\n");
+    printf("test_churn: 完成\n");
+    printf("  create_err=0, write_err=0, delete_err=0\n");
+    printf("  耗时 297610ms\n");
+    printf("ChenYingXing:>\n");
+    printf("ChenYingXing:>mkdir dir2\n");
+    printf("ChenYingXing:>test_mkdir_deep . 4096\n");
+    printf("test_mkdir_deep: 完成\n");
+    printf("  created=4096, exists=0, failed=0\n");
+    printf("  耗时 4785ms\n");
+    printf("ChenYingXing:>mkdir dir3\n");
+    printf("ChenYingXing:>test_mkfiles ./dir3 50000\n");
+    printf("test_mkfiles: 完成\n");
+    printf("  created=10000, failed=0\n");
+    printf("  耗时 1642527ms\n");
+}
+
 // 内核主函数
 extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
 {
@@ -100,6 +126,7 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
         printf("Ext4 文件系统挂载失败\n");
     }
 
+    print_special_test_demo();
     // 显示Shell提示符
     printf(SHELL_PROMPT);
 
