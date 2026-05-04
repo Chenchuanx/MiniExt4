@@ -6,11 +6,8 @@
 
 #include <linux/fs.h>
 #include <fs/ext4/ext4.h>
-#include <fs/bptree.h>
 #include <fs/ext4/htree.h>
 
-/* 需要完整类型定义以在本文件中声明静态 bptree_node 池 */
-struct bptree_node;
 #include <fs/dentry.h>
 
 #ifndef NULL
@@ -107,233 +104,39 @@ static inline void cpu_to_le16_val(uint16_t *p, uint16_t x) { *p = x; }
 /* 目录项记录长度（按 4 字节对齐） */
 #define EXT4_DIR_REC_LEN(name_len) (((name_len) + 8 + 3) & ~3)
 
-/*
- * 目录内存索引开关：
- * 当前 B+Tree 索引在高频 churn 场景下存在稳定性问题（64 阈值附近容易触发异常）。
- * 先关闭，统一回退到 on-disk 线性扫描路径，优先保证功能稳定。
- */
-#define EXT4_DIR_MEM_INDEX_ENABLED 1
+/* 不在 ext4 内维护第二套目录级内存索引：依赖 on-disk HTree + VFS dcache。 */
+#define EXT4_DIR_MEM_INDEX_ENABLED 0
 
-/* === 目录 B+Tree 索引（仅内存） ======================================= */
-
-struct ext4_dir_index_entry {
-	u64 key;            /* 目前直接使用简单 hash 作为 key，后续可替换为 HTree hash */
-	uint32_t blocknr;   /* 目录项所在的物理块号 */
-	uint32_t offset;    /* 在块内的字节偏移 */
-};
-
-/* 目录项哈希回调，便于后续替换为真正的 ext4 HTree hash 或其他策略 */
-typedef u64 (*ext4_dir_hash_fn)(const struct qstr *name, void *ctx);
-
-struct ext4_dir_index {
-	struct bptree_root root;                         /* B+Tree 根 */
-	struct ext4_dir_index_entry entries[64];         /* 简化：最多缓存 64 个索引项 */
-	int used;
-	ext4_dir_hash_fn hash_fn;                        /* 名字 -> key 的哈希函数 */
-	void *hash_ctx;                                  /* 传给哈希函数的上下文 */
-};
-
-/* 前向声明：目录索引构建与块号获取函数 */
-static void ext4_dir_index_build(struct inode *dir, struct ext4_dir_index *idx);
+/* 前向声明：目录块号获取函数 */
 static int ext4_dir_get_blocknr(struct inode *dir, uint32_t lblock,
 				uint32_t *out_blocknr);
 
-static struct bptree_node *ext4_dir_bpt_alloc_node(void)
-{
-	/* 这里直接使用简单的静态分配池，以避免依赖通用 malloc。
-	 * 若目录很多/更复杂时，可以改成按 ext4_dir_index 成员池来分配。*/
-	static struct bptree_node node_pool[64];
-	static int node_used[64];
-	int i;
-
-	for (i = 0; i < 64; i++) {
-		if (!node_used[i]) {
-			node_used[i] = 1;
-			return &node_pool[i];
-		}
-	}
-	return (struct bptree_node *)0;
-}
-
-static void ext4_dir_bpt_free_node(struct bptree_node *node)
-{
-	/* 简化：不真正回收，当前实现只做插入，不做删除，故可以忽略回收 */
-	(void)node;
-}
-
-/* 默认名字 hash 实现：FNV-1a 64-bit。
- * 作为可替换策略的一个默认实现，真正的 ext4 HTree 可以通过自定义 hash_fn 注入。 */
-static u64 ext4_dir_default_hash(const struct qstr *name, void *ctx)
-{
-	u64 h = 0xcbf29ce484222325ULL; /* FNV-1a 64-bit offset basis */
-	size_t i;
-
-	(void)ctx;
-	if (!name || !name->name)
-		return 0;
-	for (i = 0; i < (size_t)name->len; i++) {
-		h ^= (u64)name->name[i];
-		h *= 0x100000001b3ULL; /* FNV prime */
-	}
-	return h;
-}
-
-static struct ext4_dir_index *ext4_dir_get_index(struct inode *dir)
-{
-#if !EXT4_DIR_MEM_INDEX_ENABLED
-	(void)dir;
-	return (struct ext4_dir_index *)0;
-#else
-	struct ext4_inode_info *ei = (struct ext4_inode_info *)dir->i_private;
-	struct ext4_dir_index *idx;
-
-	if (!ei)
-		return (struct ext4_dir_index *)0;
-
-	if (ei->dir_index)
-		return (struct ext4_dir_index *)ei->dir_index;
-
-	/* 第一次访问该目录：懒初始化一个索引结构 */
-	idx = (struct ext4_dir_index *)malloc(sizeof(struct ext4_dir_index));
-	if (!idx)
-		return (struct ext4_dir_index *)0;
-
-	memset(idx, 0, sizeof(*idx));
-	bptree_init(&idx->root, ext4_dir_bpt_alloc_node, ext4_dir_bpt_free_node);
-
-	/* 初始化默认 hash 策略，后续如果需要可以在其他地方替换 hash_fn/hash_ctx */
-	idx->hash_fn = ext4_dir_default_hash;
-	idx->hash_ctx = NULL;
-
-	/* 基于当前目录的所有 on-disk 目录项，构建一次完整的哈希索引树。
-	 * 之后 find/add/remove 可以都走 B+Tree，接近真正的 HTree 行为。 */
-	ext4_dir_index_build(dir, idx);
-
-	ei->dir_index = idx;
-	return idx;
-#endif
-}
-
-/* 目录项变更后丢弃内存中的哈希索引，避免 remove 后 B+Tree 仍指向旧偏移 */
 static void ext4_dir_index_invalidate(struct inode *dir)
 {
 	struct ext4_inode_info *ei = (struct ext4_inode_info *)dir->i_private;
-	struct ext4_dir_index *idx;
-
-	if (!ei || !ei->dir_index)
+	if (!ei)
 		return;
-	idx = (struct ext4_dir_index *)ei->dir_index;
-	free(idx);
-	ei->dir_index = NULL;
+	ei->dir_index = (void *)0;
 }
 
-/* 在给定索引结构中添加一条项（内部使用） */
-static void ext4_dir_index_add_idx(struct ext4_dir_index *idx,
-				   const struct qstr *name,
-				   uint32_t blocknr, uint32_t off)
-{
-	struct ext4_dir_index_entry *e;
-	u64 key;
-
-	if (!idx || idx->used >= (int)(sizeof(idx->entries) / sizeof(idx->entries[0])))
-		return;
-
-	if (!idx->hash_fn)
-		return;
-
-	key = idx->hash_fn(name, idx->hash_ctx);
-
-	e = &idx->entries[idx->used++];
-	e->key = key;
-	e->blocknr = blocknr;
-	e->offset = off;
-
-	(void)bptree_insert(&idx->root, key, e);
-}
-
-/* 封装一层：从 inode 获取/初始化索引后再添加 */
+/* ext4 内不维护目录级内存索引，函数保留为 no-op，便于调用点保持统一。 */
 static void ext4_dir_index_add(struct inode *dir, const struct qstr *name,
 			       uint32_t blocknr, uint32_t off)
 {
-	struct ext4_dir_index *idx = ext4_dir_get_index(dir);
-	if (!idx)
-		return;
-	ext4_dir_index_add_idx(idx, name, blocknr, off);
-}
-
-/* 首次为某个目录创建索引时，对整个目录做一次全量扫描并建立 B+Tree
- * 这样 ext4_find_entry 随后就可以真正作为 “HTree” 式的哈希索引来用。 */
-static void ext4_dir_index_build(struct inode *dir, struct ext4_dir_index *idx)
-{
-	uint32_t block_size = ext4_get_block_size();
-	char *buf;
-	uint32_t blk_idx;
-	uint32_t off;
-	int ret;
-
-	if (!dir || !idx)
-		return;
-
-	buf = (char *)malloc(block_size);
-	if (!buf)
-		return;
-
-	for (blk_idx = 0; ; blk_idx++) {
-		uint32_t blocknr;
-
-		if (ext4_dir_get_blocknr(dir, blk_idx, &blocknr) < 0)
-			break;
-
-		ret = ext4_read_block(blocknr, buf);
-		if (ret < 0)
-			break;
-
-		off = 0;
-		while (off < block_size) {
-			struct ext4_dir_entry *de = (struct ext4_dir_entry *)(buf + off);
-			uint16_t rec_len = le16_to_cpu(de->rec_len);
-			uint16_t name_len = (uint16_t)de->name_len;
-			uint32_t ino = le32_to_cpu(de->inode);
-
-			if (rec_len == 0)
-				goto out;
-
-			if (ino != 0 && name_len > 0) {
-				struct qstr q;
-				q.len = name_len;
-				q.name = (const unsigned char *)de->name;
-				/* q.hash 未使用，置 0 即可 */
-				q.hash = 0;
-
-				ext4_dir_index_add_idx(idx, &q, blocknr, off);
-			}
-
-			off += rec_len;
-		}
-	}
-
-out:
-	free(buf);
+	(void)dir;
+	(void)name;
+	(void)blocknr;
+	(void)off;
 }
 
 static int ext4_dir_index_lookup(struct inode *dir, const struct qstr *name,
 				 uint32_t *blocknr, uint32_t *off)
 {
-	struct ext4_dir_index *idx = ext4_dir_get_index(dir);
-	u64 key;
-	struct ext4_dir_index_entry *e;
-
-	if (!idx || !idx->hash_fn)
-		return -1;
-
-	key = idx->hash_fn(name, idx->hash_ctx);
-	e = (struct ext4_dir_index_entry *)bptree_search(&idx->root, key);
-	if (!e)
-		return -1;
-
-	*blocknr = e->blocknr;
-	*off = e->offset;
-	return 0;
+	(void)dir;
+	(void)name;
+	(void)blocknr;
+	(void)off;
+	return -1;
 }
 
 /* 统一获取目录的数据块号：

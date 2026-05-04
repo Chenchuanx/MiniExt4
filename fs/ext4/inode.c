@@ -361,6 +361,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	char *buf;
 	struct ext4_dir_entry *de;
 	uint16_t rec1, rec2;
+	uint16_t free_len;
 	int ret;
 	uint32_t parent_group;
 
@@ -369,7 +370,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (ino == 0) {
 		return -ENOSPC;
 	}
-	/* 新目录默认只占 1 个块，保持与 Linux 常见行为一致（4KB 块时目录大小为 4KB）。 */
+	/* 延迟启用 HTree：新目录先分配 1 个线性目录块。 */
 	blocknr = ext4_new_block_in_group(sb, parent_group);
 	if (blocknr == 0) {
 		ext4_free_inode(sb, (uint32_t)ino);
@@ -399,7 +400,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 		ei->i_alloc_group_hint = parent_group;
 	}
 
-	/* 初始化目录块：仅包含 "."、".."，其余空间作为空闲目录项。 */
+	/* 初始化线性目录块： "." + ".." + 空闲目录项。 */
 	buf = (char *)malloc(block_size);
 	if (!buf) {
 		sb->s_op->destroy_inode(inode);
@@ -427,16 +428,19 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	de->file_type = 2; /* DT_DIR */
 	de->name[0] = '.';
 	de->name[1] = '.';
-
-	/* 剩余空间作为一个空闲目录项，供后续 ext4_add_entry 插入真实目录项。 */
-	{
-		uint32_t off = rec1 + rec2;
-		struct ext4_dir_entry *fake = (struct ext4_dir_entry *)((char *)buf + off);
-		fake->inode = 0;
-		fake->rec_len = (uint16_t)(block_size - off);
-		fake->name_len = 0;
-		fake->file_type = 0;
+	free_len = (uint16_t)(block_size - rec1 - rec2);
+	if (free_len < 8) {
+		free(buf);
+		sb->s_op->destroy_inode(inode);
+		ext4_free_block(sb, blocknr);
+		ext4_free_inode(sb, (uint32_t)ino);
+		return -EIO;
 	}
+	de = (struct ext4_dir_entry *)((char *)buf + rec1 + rec2);
+	de->inode = 0;
+	de->rec_len = free_len;
+	de->name_len = 0;
+	de->file_type = 0;
 
 	ret = ext4_write_block(blocknr, buf);
 	if (ret < 0) {

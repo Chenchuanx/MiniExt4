@@ -36,7 +36,7 @@ struct dentry *vfs_get_cwd_dentry(void)
 	}
 
 	if (!vfs_cwd) {
-		vfs_cwd = sb->s_root;
+		vfs_cwd = dget(sb->s_root);
 	}
 
 	return vfs_cwd;

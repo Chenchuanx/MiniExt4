@@ -266,6 +266,9 @@ struct ext4_dir_entry {
 	char	name[255];	/* 文件名（可变长度） */
 } __attribute__((packed));
 
+/* 目录项 on-disk 固定头长度（不含 name[] 变长数据）。 */
+#define EXT4_DIR_ENTRY_HEADER_LEN 8U
+
 /* Ext4 超级块信息（内存结构，挂到 sb->s_fs_info） */
 struct ext4_sb_info {
 	/* 从磁盘 superblock 读取的信息 */

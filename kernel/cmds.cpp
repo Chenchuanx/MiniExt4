@@ -981,6 +981,8 @@ static void cmd_test_mkdir_deep(const int8_t *arg)
 	uint64_t exists = 0;
 	uint64_t failed = 0;
 	int first_err = 0;
+	uint32_t fail_level = 0;
+	const char *fail_op = 0;
 
 	uint32_t start_ticks = pit_get_ticks();
 	uint32_t pit_hz = pit_get_frequency_hz();
@@ -1009,6 +1011,8 @@ static void cmd_test_mkdir_deep(const int8_t *arg)
 			failed++;
 			if (first_err == 0) {
 				first_err = ret;
+				fail_level = i;
+				fail_op = "mkdir";
 			}
 			break;
 		}
@@ -1018,6 +1022,8 @@ static void cmd_test_mkdir_deep(const int8_t *arg)
 			failed++;
 			if (first_err == 0) {
 				first_err = cdret;
+				fail_level = i;
+				fail_op = "chdir";
 			}
 			break;
 		}
@@ -1041,6 +1047,16 @@ static void cmd_test_mkdir_deep(const int8_t *arg)
 		printf((int8_t *)"  first_err=");
 		print_errno_value(first_err);
 		printf((int8_t *)"\n");
+		if (fail_op) {
+			printf((int8_t *)"  fail_op=");
+			printf((int8_t *)fail_op);
+			printf((int8_t *)", level=");
+			printf((unsigned int)fail_level);
+			printf((int8_t *)"\n");
+		}
+		if (first_err == -ENOSPC) {
+			printf((int8_t *)"  提示: 错误码 28 通常表示块或 inode 耗尽；可先执行 df 查看剩余空间\n");
+		}
 	}
 }
 
@@ -1369,7 +1385,7 @@ static void cmd_find(const int8_t *arg)
 
 		if (tok1 && strcmp((const int8_t *)tok1, (const int8_t *)"-name") == 0) {
 			if (!tok2) {
-				printf((int8_t *)"find: 用法: find [PATH] [-name PATTERN]\n");
+				printf((int8_t *)"find: 用法: find [路径] [-name 名称]\n");
 				return;
 			}
 			name_pat = tok2;
@@ -1379,7 +1395,7 @@ static void cmd_find(const int8_t *arg)
 			}
 			if (tok2) {
 				if (strcmp((const int8_t *)tok2, (const int8_t *)"-name") != 0 || !tok3) {
-					printf((int8_t *)"find: 用法: find [PATH] [-name PATTERN]\n");
+					printf((int8_t *)"find: 用法: find [路径] [-name 名称]\n");
 					return;
 				}
 				name_pat = tok3;
@@ -1409,7 +1425,7 @@ const struct cmd_entry cmd_table[] = {
 	{"touch", cmd_touch, "创建空文件（不存在时）"},
 	{"echo", cmd_echo, "输出文本；支持 > 重定向到文件"},
 	{"cat", cmd_cat, "显示文件内容"},
-	{"find", cmd_find, "递归查找: find <路径> [-name <模式>]"},
+	{"find", cmd_find, "递归查找: find <路径> [-name <名称>]"},	
 	{"rm", cmd_rm, "删除文件"},
 	{"rmdir", cmd_rmdir, "删除空目录"},
 	{0, 0, 0},

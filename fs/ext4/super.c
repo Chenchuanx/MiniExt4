@@ -244,6 +244,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     uint32_t groups_count;
     uint32_t first_data_block;
     uint32_t inode_size = 256;  /* Ext4 默认 inode 大小 256 字节 */
+    uint32_t reserved_inodes_g0;
     uint32_t log_block_size;
     uint32_t sb_blocknr;
     uint32_t sb_offset;
@@ -268,9 +269,17 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     } else {
         blocks_per_group = max_blocks_per_group;    /* 按块大小决定的每组上限 */
     }
-    inodes_per_group = blocks_per_group / 4;  /* 简化：每 4 块一个 inode */
+    /* 提高 inode 密度：每组 inode 数与块数同量级，避免小镜像深目录测试过早耗尽 inode。 */
+    inodes_per_group = blocks_per_group;
     groups_count = (total_blocks + blocks_per_group - 1) / blocks_per_group;
     first_data_block = (block_size == 1024) ? 1 : 0;
+    if (inodes_per_group >= 10) {
+        reserved_inodes_g0 = 10;   /* 与传统 ext4 兼容：优先保留前 10 个 */
+    } else if (inodes_per_group >= 2) {
+        reserved_inodes_g0 = 2;    /* 至少保留 bad inode(1) 与 root inode(2) */
+    } else {
+        reserved_inodes_g0 = inodes_per_group;
+    }
     
     /* 分配缓冲区（至少 4096 字节，确保能容纳整个块和超级块） */
     uint32_t buf_size = (block_size > 4096) ? block_size : 4096;
@@ -297,7 +306,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_inodes_count = groups_count * inodes_per_group;
     esb->s_blocks_count_lo = total_blocks;
     esb->s_r_blocks_count_lo = total_blocks / 20;  /* 保留 5% 的块 */
-    esb->s_free_inodes_count = esb->s_inodes_count - 10;  /* 减去保留 inode */
+    esb->s_free_inodes_count = esb->s_inodes_count - reserved_inodes_g0;
     /* s_free_blocks_count_lo 会在后面根据实际计算的系统块数更新 */
     esb->s_first_data_block = first_data_block;
     esb->s_log_block_size = log_block_size;
@@ -322,7 +331,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     esb->s_rev_level = 1;  /* 动态版本 */
     esb->s_def_resuid = 0;
     esb->s_def_resgid = 0;
-    esb->s_first_ino = 11;  /* 第一个非保留 inode */
+    esb->s_first_ino = reserved_inodes_g0 + 1;  /* 第一个非保留 inode */
     esb->s_inode_size = inode_size;
     esb->s_block_group_nr = 0;
     /* 兼容/不兼容特性：
@@ -434,13 +443,13 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
         if (g == 0) {
             group0_inode_table = inode_table_abs;
             root_dir_block = inode_table_abs + inode_table_blocks;
-            used_blocks += 1; /* 根目录数据块 */
+            used_blocks += 1; /* 根目录首个目录块 */
         }
         if (used_blocks > group_blocks) {
             used_blocks = group_blocks;
         }
         free_blocks_group = group_blocks - used_blocks;
-        free_inodes_group = (g == 0) ? (inodes_per_group - 10) : inodes_per_group;
+        free_inodes_group = (g == 0) ? (inodes_per_group - reserved_inodes_g0) : inodes_per_group;
         /* 当前实现不会维护“inode table 尾部未初始化”语义，保持为 0 更稳妥。 */
         itable_unused_group = 0;
         used_dirs_group = (g == 0) ? 1 : 0;
@@ -517,7 +526,7 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
 
         memset(buf, 0, block_size);
         if (g == 0) {
-            for (int i = 0; i < 10; i++) {
+            for (uint32_t i = 0; i < reserved_inodes_g0; i++) {
                 uint32_t byte = (uint32_t)i / 8;
                 uint32_t bit = (uint32_t)i % 8;
                 buf[byte] |= (1 << bit);
@@ -577,9 +586,10 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
         return -1;
     }
     
-    /* 初始化根目录数据块（包含 . 和 .. 条目） */
+    /* 初始化根目录数据块： "." + ".." + 空闲目录项。 */
     memset(buf, 0, block_size);
     struct ext4_dir_entry *de = (struct ext4_dir_entry *)buf;
+    struct ext4_dir_entry *free_de;
     
     /* . 条目 */
     uint16_t name_len_1 = 1;
@@ -593,13 +603,18 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     /* .. 条目 */
     de = (struct ext4_dir_entry *)((char *)de + rec_len_1);
     uint16_t name_len_2 = 2;
-    uint16_t rec_len_2 = ((block_size - rec_len_1) / 4) * 4;  /* 剩余空间，对齐到 4 字节 */
+    uint16_t rec_len_2 = (8 + name_len_2 + 3) & ~3;
     de->inode = 2;
     de->rec_len = rec_len_2;
     de->name_len = (__u8)name_len_2;
     de->file_type = 2; /* DT_DIR */
     de->name[0] = '.';
     de->name[1] = '.';
+    free_de = (struct ext4_dir_entry *)((char *)buf + rec_len_1 + rec_len_2);
+    free_de->inode = 0;
+    free_de->rec_len = (uint16_t)(block_size - rec_len_1 - rec_len_2);
+    free_de->name_len = 0;
+    free_de->file_type = 0;
     
     ret = ext4_write_block(root_dir_block, buf);
     if (ret < 0) {
@@ -872,8 +887,12 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         }
         /* 若计数字段异常，按 group0 最小布局回填，避免后续分配器直接判满 */
         if (sbi->s_group_desc->bg_free_inodes_count_lo == 0) {
-            if (sbi->s_inodes_per_group > 10) {
-                sbi->s_group_desc->bg_free_inodes_count_lo = (uint16_t)(sbi->s_inodes_per_group - 10);
+            uint32_t reserved = (esb->s_first_ino > 1) ? (esb->s_first_ino - 1) : 1;
+            if (reserved >= sbi->s_inodes_per_group && sbi->s_inodes_per_group >= 2) {
+                reserved = 2;
+            }
+            if (sbi->s_inodes_per_group > reserved) {
+                sbi->s_group_desc->bg_free_inodes_count_lo = (uint16_t)(sbi->s_inodes_per_group - reserved);
                 sbi->s_group_desc->bg_itable_unused_lo = 0;
                 sbi->s_group_desc->bg_itable_unused_hi = 0;
             } else {

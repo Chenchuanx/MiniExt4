@@ -181,26 +181,27 @@ static int ext4_htree_parse_root(const char *root, uint32_t block_size,
 	uint16_t r1 = le16_to_cpu(dot->rec_len);
 	struct ext4_dir_entry *dotdot = (struct ext4_dir_entry *)(root + r1);
 	uint16_t r2 = le16_to_cpu(dotdot->rec_len);
-	struct ext4_dir_entry *fake = (struct ext4_dir_entry *)(root + r1 + r2);
-	uint32_t fake_off = (uint32_t)(r1 + r2);
-	uint16_t fake_len = le16_to_cpu(fake->rec_len);
-	char *fake_end = (char *)root + fake_off + fake_len;
+	uint16_t dotdot_min = EXT4_DIR_REC_LEN((int)dotdot->name_len);
+	char *dotdot_end = (char *)dotdot + r2;
 	struct ext4_dx_root_info *info;
 	struct ext4_dx_countlimit *cl;
 	struct ext4_dx_entry *entries;
 	int cap, nent;
 
-	if (fake_off + fake_len > block_size || fake_len < (int)sizeof(struct ext4_dir_entry))
-		return -1;
-	info = (struct ext4_dx_root_info *)((char *)fake + sizeof(struct ext4_dir_entry));
+	if (r1 == 0 || r2 == 0) return -1;
+	if ((uint32_t)r1 + (uint32_t)r2 > block_size) return -1;
+	if (r2 < dotdot_min) return -1;
+	info = (struct ext4_dx_root_info *)((char *)dotdot + dotdot_min);
+	if ((char *)(info + 1) > dotdot_end) return -1;
 	cl = (struct ext4_dx_countlimit *)(info + 1);
-	entries = (struct ext4_dx_entry *)(cl + 1);
-	if ((char *)(entries + 1) > fake_end) return -1;
+	entries = (struct ext4_dx_entry *)cl;
+	if ((char *)(entries + 1) > dotdot_end) return -1;
 	cap = (int)le16_to_cpu(cl->limit);
 	nent = (int)le16_to_cpu(cl->count);
 	if (cap < 1 || nent < 1 || nent > cap) return -1;
-	if ((char *)(entries + cap) > fake_end) return -1;
-	if (le32_to_cpu(entries[nent - 1].hash) != 0xffffffffU) return -1;
+	if ((char *)(entries + cap) > dotdot_end) return -1;
+	if (info->info_length != sizeof(struct ext4_dx_root_info))
+		return -1;
 	*out_info = info;
 	*out_entries = entries;
 	*out_cap = cap;
@@ -214,7 +215,7 @@ static int ext4_htree_parse_node(char *node, uint32_t block_size,
 {
 	struct ext4_dx_node *dn = (struct ext4_dx_node *)node;
 	struct ext4_dx_countlimit *cl = &dn->countlimit;
-	struct ext4_dx_entry *entries = dn->entries;
+	struct ext4_dx_entry *entries = (struct ext4_dx_entry *)cl;
 	int cap, nent;
 
 	(void)block_size;
@@ -222,7 +223,6 @@ static int ext4_htree_parse_node(char *node, uint32_t block_size,
 	nent = (int)le16_to_cpu(cl->count);
 	if (cap < 1 || nent < 1 || nent > cap) return -1;
 	if ((char *)(entries + cap) > node + block_size) return -1;
-	if (le32_to_cpu(entries[nent - 1].hash) != 0xffffffffU) return -1;
 	*out_entries = entries;
 	*out_cap = cap;
 	*out_count = nent;
@@ -233,8 +233,15 @@ static uint32_t ext4_htree_pick_leaf_lblock(struct ext4_dx_entry *entries, int n
 					    uint32_t h32)
 {
 	int i;
-	for (i = 0; i < n; i++) if (h32 <= le32_to_cpu(entries[i].hash)) return le32_to_cpu(entries[i].block);
-	return le32_to_cpu(entries[n - 1].block);
+	uint32_t chosen;
+	if (n <= 0) return 0;
+	chosen = le32_to_cpu(entries[0].block);
+	for (i = 1; i < n; i++) {
+		if (h32 < le32_to_cpu(entries[i].hash))
+			break;
+		chosen = le32_to_cpu(entries[i].block);
+	}
+	return chosen;
 }
 
 static int ext4_htree_find_dx_index_for_lblock(struct ext4_dx_entry *entries, int n,
@@ -515,7 +522,6 @@ int ext4_htree_split_leaf(struct inode *dir, struct super_block *sb,
 			if (ext4_write_block(node_phys, node_buf) < 0) { free(node_buf); return -1; }
 			free(node_buf);
 			root_cl->count = 1;
-			entries[0].hash = 0xffffffffU;
 			entries[0].block = (uint32_t)node_lblk;
 			info->indirect_levels = 1;
 			if (ext4_write_block(root_phys, root_buf) < 0) return -1;

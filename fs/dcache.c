@@ -95,8 +95,8 @@ struct dentry *d_alloc(struct dentry *parent, const struct qstr *name)
 			dentry->d_name.len = name->len;
 			dentry->d_name.hash = name->hash;
 			
-			/* 设置父子关系 */
-			dentry->d_parent = parent;
+			/* 设置父子关系：子 dentry 持有父 dentry 引用，保证 d_parent 生命周期有效。 */
+			dentry->d_parent = parent ? dget(parent) : (struct dentry *)0;
 			INIT_LIST_HEAD(&dentry->d_child);
 			INIT_LIST_HEAD(&dentry->d_subdirs);
 			
@@ -164,6 +164,8 @@ struct dentry *dget(struct dentry *dentry)
  */
 void dput(struct dentry *dentry)
 {
+	struct dentry *parent;
+
 	if (!dentry) {
 		return;
 	}
@@ -174,10 +176,12 @@ void dput(struct dentry *dentry)
 	
 	/* 如果引用计数为 0，释放 dentry */
 	if (dentry->d_count == 0) {
+		parent = dentry->d_parent;
 		/* 从父目录的子项链表中移除 */
 		if (!list_empty(&dentry->d_child)) {
 			list_del(&dentry->d_child);
 		}
+		dentry->d_parent = (struct dentry *)0;
 		
 		/* 释放关联的 inode（如果存在） */
 		if (dentry->d_inode) {
@@ -204,6 +208,11 @@ void dput(struct dentry *dentry)
 				dcache_used[i] = false;
 				break;
 			}
+		}
+
+		/* 平衡 d_alloc 时对子项父目录持有的引用。 */
+		if (parent && parent != dentry) {
+			dput(parent);
 		}
 	}
 }
