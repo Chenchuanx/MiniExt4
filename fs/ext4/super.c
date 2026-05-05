@@ -128,9 +128,9 @@ static void ext4_destroy_sbi(struct ext4_sb_info *sbi)
 {
 	if (!sbi)
 		return;
-	if (sbi->s_alloc_goal_bit_per_group) {
-		free(sbi->s_alloc_goal_bit_per_group);
-		sbi->s_alloc_goal_bit_per_group = NULL;
+	if (sbi->s_alloc_nf.goal_bit_per_group) {
+		free(sbi->s_alloc_nf.goal_bit_per_group);
+		sbi->s_alloc_nf.goal_bit_per_group = 0;
 	}
 	if (sbi->s_bmap_cache_buf) {
 		free(sbi->s_bmap_cache_buf);
@@ -759,10 +759,8 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     sbi->s_hash_seed[2] = esb->s_hash_seed[2];
     sbi->s_hash_seed[3] = esb->s_hash_seed[3];
     sbi->s_def_hash_version = esb->s_def_hash_version;
-    sbi->s_alloc_goal_group = 0;
-    sbi->s_alloc_goal_bit_per_group = NULL;
-    sbi->s_alloc_last_group = 0;
-    sbi->s_alloc_last_bit = 1;
+    sbi->s_alloc_nf.goal_group = 0;
+    sbi->s_alloc_nf.goal_bit_per_group = 0;
     sbi->s_bmap_cache_group = 0;
     sbi->s_bmap_cache_valid = 0;
     sbi->s_bmap_cache_dirty = 0;
@@ -826,8 +824,8 @@ static int ext4_fill_super(struct super_block *sb, void *data)
             free(buf);
             return -1;
         }
-        sbi->s_alloc_goal_bit_per_group = (uint32_t *)malloc(cur_bytes);
-        if (!sbi->s_alloc_goal_bit_per_group) {
+        sbi->s_alloc_nf.goal_bit_per_group = (uint32_t *)malloc(cur_bytes);
+        if (!sbi->s_alloc_nf.goal_bit_per_group) {
             printf("ext4: 分配按组块分配游标失败\n");
             ext4_destroy_sbi(sbi);
             free(buf);
@@ -836,7 +834,7 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         {
             uint32_t gi;
             for (gi = 0; gi < sbi->s_groups_count; gi++)
-                sbi->s_alloc_goal_bit_per_group[gi] = 1;
+                sbi->s_alloc_nf.goal_bit_per_group[gi] = 1;
         }
     }
     

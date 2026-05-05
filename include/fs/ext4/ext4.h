@@ -269,6 +269,12 @@ struct ext4_dir_entry {
 /* 目录项 on-disk 固定头长度（不含 name[] 变长数据）。 */
 #define EXT4_DIR_ENTRY_HEADER_LEN 8U
 
+/* next-fit 分配器状态（内存态） */
+struct ext4_nextfit_state {
+	uint32_t	goal_group;		/* 无首选组时 next-fit 起始块组 */
+	uint32_t	*goal_bit_per_group;	/* 每组块位图内 next-fit 起始 bit（动态分配） */
+};
+
 /* Ext4 超级块信息（内存结构，挂到 sb->s_fs_info） */
 struct ext4_sb_info {
 	/* 从磁盘 superblock 读取的信息 */
@@ -294,10 +300,7 @@ struct ext4_sb_info {
 	uint8_t		s_def_hash_version;
 
 	/* 块分配器状态（参考 Linux ext4 的 goal + bitmap cache 思路） */
-	uint32_t	s_alloc_goal_group;      /* 无首选组时 next-fit 起始块组 */
-	uint32_t	*s_alloc_goal_bit_per_group; /* 每组块位图内 next-fit 起始 bit（动态分配） */
-	uint32_t	s_alloc_last_group;      /* 最近一次成功分配所在组 */
-	uint32_t	s_alloc_last_bit;        /* 最近一次成功分配所在 bit */
+	struct ext4_nextfit_state s_alloc_nf;
 
 	uint32_t	s_bmap_cache_group;      /* 当前缓存的块位图所属组 */
 	uint8_t		s_bmap_cache_valid;      /* 位图缓存是否有效 */

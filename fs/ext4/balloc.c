@@ -371,7 +371,7 @@ uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
 	}
 
 	/* 先尝试请求级首选组，再回退到全局 goal（next-fit）。 */
-	start_group = sbi->s_alloc_goal_group;
+	start_group = sbi->s_alloc_nf.goal_group;
 	if (preferred_group < groups_count) {
 		start_group = preferred_group;
 	}
@@ -403,8 +403,8 @@ uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
 
 		/* 组内 next-fit：每组独立游标；无表时从 bit 1 起扫 */
 		start_i = 1;
-		if (sbi->s_alloc_goal_bit_per_group && g < sbi->s_groups_count) {
-			uint32_t gb = sbi->s_alloc_goal_bit_per_group[g];
+		if (sbi->s_alloc_nf.goal_bit_per_group && g < sbi->s_groups_count) {
+			uint32_t gb = sbi->s_alloc_nf.goal_bit_per_group[g];
 			if (gb >= 1 && gb < group_blocks)
 				start_i = gb;
 		}
@@ -491,26 +491,24 @@ uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
 		if (ext4_write_group_desc(sb, g, &gd_local) < 0) return 0;
 		if (g == 0) *sbi->s_group_desc = gd_local;
 
-		/* 更新 next-fit 游标：每组独立；跨组起点仍用 s_alloc_goal_group */
-		sbi->s_alloc_last_group = g;
-		sbi->s_alloc_last_bit = i + alloc_len - 1;
+		/* 更新 next-fit 游标：每组独立；跨组起点仍用 goal_group */
 		{
 			uint32_t next_bit = i + alloc_len;
-			if (sbi->s_alloc_goal_bit_per_group && g < sbi->s_groups_count) {
+			if (sbi->s_alloc_nf.goal_bit_per_group && g < sbi->s_groups_count) {
 				if (next_bit >= group_blocks) {
-					sbi->s_alloc_goal_bit_per_group[g] = 1;
-					sbi->s_alloc_goal_group =
+					sbi->s_alloc_nf.goal_bit_per_group[g] = 1;
+					sbi->s_alloc_nf.goal_group =
 						(g + 1 < groups_count) ? (g + 1) : 0;
 				} else {
-					sbi->s_alloc_goal_bit_per_group[g] = next_bit;
-					sbi->s_alloc_goal_group = g;
+					sbi->s_alloc_nf.goal_bit_per_group[g] = next_bit;
+					sbi->s_alloc_nf.goal_group = g;
 				}
 			} else {
 				if (next_bit >= group_blocks) {
-					sbi->s_alloc_goal_group =
+					sbi->s_alloc_nf.goal_group =
 						(g + 1 < groups_count) ? (g + 1) : 0;
 				} else {
-					sbi->s_alloc_goal_group = g;
+					sbi->s_alloc_nf.goal_group = g;
 				}
 			}
 		}
