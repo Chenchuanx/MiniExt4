@@ -126,7 +126,7 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
         printf("Ext4 文件系统挂载失败\n");
     }
 
-    print_special_test_demo();
+    // print_special_test_demo();
     // 显示Shell提示符
     printf(SHELL_PROMPT);
 
