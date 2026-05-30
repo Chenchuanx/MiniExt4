@@ -146,6 +146,326 @@ static void cmd_df(const int8_t *arg)
 	}
 }
 
+struct dump_feat_name {
+	uint32_t mask;
+	const int8_t *name;
+};
+
+static void dump_fixed_str(const int8_t *label, const char *s, int maxlen)
+{
+	char tmp[65];
+	int i;
+	int n = 0;
+
+	printf(label);
+	if (s && maxlen > 0) {
+		for (i = 0; i < maxlen && s[i] != '\0' && n + 1 < (int)sizeof(tmp); i++) {
+			tmp[n++] = s[i];
+		}
+	}
+	tmp[n] = '\0';
+	if (n > 0) {
+		printf((const int8_t *)tmp);
+	} else {
+		printf((const int8_t *)"n/a");
+	}
+	printf((const int8_t *)"\n");
+}
+
+static void dump_uuid_field(const uint8_t *uuid)
+{
+	int i;
+
+	printf((int8_t *)"Filesystem UUID:          ");
+	for (i = 0; i < 16; i++) {
+		if (i == 4 || i == 6 || i == 8 || i == 10) {
+			printf((int8_t *)"-");
+		}
+		printfHex(uuid[i]);
+	}
+	printf((int8_t *)"\n");
+}
+
+static void dump_feature_line(const int8_t *title, uint32_t feat,
+			      const struct dump_feat_name *tbl, int count)
+{
+	int i;
+	int first = 1;
+
+	printf(title);
+	for (i = 0; i < count; i++) {
+		if (feat & tbl[i].mask) {
+			if (!first) {
+				printf((int8_t *)" ");
+			}
+			printf(tbl[i].name);
+			first = 0;
+		}
+	}
+	if (first) {
+		printf((int8_t *)"none");
+	}
+	printf((int8_t *)"\n");
+}
+
+static void dump_superblock_info(struct ext4_super_block *esb, struct ext4_sb_info *sbi)
+{
+	uint64_t total_blocks = ((uint64_t)esb->s_blocks_count_hi << 32) |
+				(uint64_t)esb->s_blocks_count_lo;
+	uint64_t free_blocks = ((uint64_t)esb->s_free_blocks_count_hi << 32) |
+			       (uint64_t)esb->s_free_blocks_count_lo;
+	uint64_t r_blocks = ((uint64_t)esb->s_r_blocks_count_hi << 32) |
+			    (uint64_t)esb->s_r_blocks_count_lo;
+	uint32_t block_size = sbi->s_block_size;
+	uint32_t cluster_size = 1024U << esb->s_log_cluster_size;
+	uint32_t inodes_per_group = esb->s_inodes_per_group;
+	uint32_t inode_size = esb->s_inode_size;
+	uint32_t inode_blocks_per_group =
+		(inodes_per_group * inode_size + block_size - 1) / block_size;
+	char time_buf[32];
+	static const struct dump_feat_name compat_feats[] = {
+		{0x00000001U, (const int8_t *)"dir_prealloc"},
+		{0x00000002U, (const int8_t *)"imagic_inodes"},
+		{0x00000004U, (const int8_t *)"has_journal"},
+		{0x00000008U, (const int8_t *)"ext_attr"},
+		{0x00000010U, (const int8_t *)"resize_inode"},
+		{0x00000020U, (const int8_t *)"dir_index"},
+		{0x00000040U, (const int8_t *)"lazy_bg"},
+	};
+	static const struct dump_feat_name incompat_feats[] = {
+		{0x00000001U, (const int8_t *)"compression"},
+		{0x00000002U, (const int8_t *)"filetype"},
+		{0x00000004U, (const int8_t *)"recover"},
+		{0x00000008U, (const int8_t *)"journal_dev"},
+		{0x00000010U, (const int8_t *)"meta_bg"},
+		{0x00000040U, (const int8_t *)"extents"},
+		{0x00000080U, (const int8_t *)"64bit"},
+		{0x00000100U, (const int8_t *)"mmp"},
+		{0x00000200U, (const int8_t *)"flex_bg"},
+		{0x00000400U, (const int8_t *)"ea_inode"},
+		{0x00000800U, (const int8_t *)"dirdata"},
+		{0x00001000U, (const int8_t *)"bg_use_meta_csum"},
+		{0x00002000U, (const int8_t *)"large_dir"},
+		{0x00004000U, (const int8_t *)"inline_data"},
+	};
+	static const struct dump_feat_name ro_compat_feats[] = {
+		{0x00000001U, (const int8_t *)"sparse_super"},
+		{0x00000002U, (const int8_t *)"large_file"},
+		{0x00000004U, (const int8_t *)"huge_file"},
+		{0x00000008U, (const int8_t *)"gdt_csum"},
+		{0x00000010U, (const int8_t *)"dir_nlink"},
+		{0x00000020U, (const int8_t *)"extra_isize"},
+		{0x00000040U, (const int8_t *)"has_snapshot"},
+		{0x00000080U, (const int8_t *)"quota"},
+		{0x00000100U, (const int8_t *)"bigalloc"},
+		{0x00000200U, (const int8_t *)"metadata_csum"},
+	};
+
+	dump_fixed_str((const int8_t *)"Filesystem volume name:   ",
+		       esb->s_volume_name, (int)sizeof(esb->s_volume_name));
+	dump_fixed_str((const int8_t *)"Last mounted on:          ",
+		       esb->s_last_mounted, (int)sizeof(esb->s_last_mounted));
+	dump_uuid_field((const uint8_t *)esb->s_uuid);
+	printf((const int8_t *)"Filesystem magic number:  0xEF53\n");
+	printf((const int8_t *)"Filesystem revision #:    ", (unsigned int)esb->s_rev_level);
+	printf((const int8_t *)".", (unsigned int)esb->s_minor_rev_level);
+	printf((const int8_t *)"\n");
+	dump_feature_line((const int8_t *)"Filesystem features:      ",
+			  esb->s_feature_compat, compat_feats,
+			  (int)(sizeof(compat_feats) / sizeof(compat_feats[0])));
+	dump_feature_line((const int8_t *)"Filesystem incompatible features: ",
+			  esb->s_feature_incompat, incompat_feats,
+			  (int)(sizeof(incompat_feats) / sizeof(incompat_feats[0])));
+	dump_feature_line((const int8_t *)"Filesystem read-only compat features: ",
+			  esb->s_feature_ro_compat, ro_compat_feats,
+			  (int)(sizeof(ro_compat_feats) / sizeof(ro_compat_feats[0])));
+	printf((const int8_t *)"Filesystem flags:         (none)\n");
+	if (esb->s_state & 0x0002U) {
+		printf((const int8_t *)"Filesystem state:         with errors\n");
+	} else if (esb->s_state & 0x0001U) {
+		printf((const int8_t *)"Filesystem state:         clean\n");
+	} else {
+		printf((const int8_t *)"Filesystem state:         not clean\n");
+	}
+	if (esb->s_errors == 1) {
+		printf((const int8_t *)"Errors behavior:          Continue\n");
+	} else if (esb->s_errors == 2) {
+		printf((const int8_t *)"Errors behavior:          Remount read-only\n");
+	} else if (esb->s_errors == 3) {
+		printf((const int8_t *)"Errors behavior:          Panic\n");
+	} else {
+		printf((const int8_t *)"Errors behavior:          Unknown\n");
+	}
+	if (esb->s_creator_os == 0) {
+		printf((const int8_t *)"Filesystem OS type:       Linux\n");
+	} else {
+		printf((const int8_t *)"Filesystem OS type:       ", (unsigned int)esb->s_creator_os);
+		printf((const int8_t *)"\n");
+	}
+	printf((const int8_t *)"Inode count:              ", (unsigned long long)esb->s_inodes_count);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Block count:              ", (unsigned long long)total_blocks);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Reserved block count:     ", (unsigned long long)r_blocks);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Free blocks:              ", (unsigned long long)free_blocks);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Free inodes:              ", (unsigned long long)esb->s_free_inodes_count);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"First block:              ", (unsigned long long)esb->s_first_data_block);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Block size:               ", (unsigned long long)block_size);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Fragment size:            ", (unsigned long long)block_size);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Cluster size:             ", (unsigned long long)cluster_size);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Blocks per group:         ", (unsigned long long)esb->s_blocks_per_group);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Inodes per group:         ", (unsigned long long)inodes_per_group);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Inode blocks per group:   ", (unsigned long long)inode_blocks_per_group);
+	printf((const int8_t *)"\n");
+	format_time((unsigned long)esb->s_mtime, time_buf, (int)sizeof(time_buf));
+	printf((const int8_t *)"Last mount time:          ");
+	printf((const int8_t *)time_buf);
+	printf((const int8_t *)"\n");
+	format_time((unsigned long)esb->s_wtime, time_buf, (int)sizeof(time_buf));
+	printf((const int8_t *)"Last write time:          ");
+	printf((const int8_t *)time_buf);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Mount count:              ", (unsigned int)esb->s_mnt_count);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Maximum mount count:      ", (unsigned int)esb->s_max_mnt_count);
+	printf((const int8_t *)"\n");
+	format_time((unsigned long)esb->s_lastcheck, time_buf, (int)sizeof(time_buf));
+	printf((const int8_t *)"Last checked:             ");
+	printf((const int8_t *)time_buf);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Check interval:           ", (unsigned long long)esb->s_checkinterval);
+	printf((const int8_t *)"\n");
+	format_time((unsigned long)esb->s_mkfs_time, time_buf, (int)sizeof(time_buf));
+	printf((const int8_t *)"Filesystem created:       ");
+	printf((const int8_t *)time_buf);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"First inode:              ", (unsigned long long)esb->s_first_ino);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Inode size:               ", (unsigned long long)inode_size);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Group descriptor size:    ", (unsigned long long)esb->s_desc_size);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Reserved blocks uid:      ", (unsigned int)esb->s_def_resuid);
+	printf((const int8_t *)"\n");
+	printf((const int8_t *)"Reserved blocks gid:      ", (unsigned int)esb->s_def_resgid);
+	printf((const int8_t *)"\n");
+}
+
+static void dump_block_groups(struct ext4_super_block *esb, struct ext4_sb_info *sbi,
+			      char *buf)
+{
+	uint32_t block_size = sbi->s_block_size;
+	uint32_t groups_count = sbi->s_groups_count;
+	uint32_t desc_size = esb->s_desc_size;
+	uint32_t group_desc_block = esb->s_first_data_block + 1;
+	uint64_t total_blocks = ((uint64_t)esb->s_blocks_count_hi << 32) |
+				(uint64_t)esb->s_blocks_count_lo;
+	uint32_t group;
+
+	if (block_size == 1024U) {
+		group_desc_block = 2;
+	}
+	if (desc_size == 0) {
+		desc_size = 32;
+	}
+	if (groups_count == 0) {
+		return;
+	}
+	if (ext4_read_block(group_desc_block, buf) < 0) {
+		printf((const int8_t *)"dumpe2fs: 读取块组描述符失败\n");
+		return;
+	}
+
+	printf((const int8_t *)"\n");
+	for (group = 0; group < groups_count; group++) {
+		struct ext4_group_desc *gd =
+			(struct ext4_group_desc *)(buf + (size_t)group * desc_size);
+		uint32_t first_block = esb->s_first_data_block + group * esb->s_blocks_per_group;
+		uint32_t last_block = first_block + esb->s_blocks_per_group - 1;
+		uint32_t free_blocks = ((uint32_t)gd->bg_free_blocks_count_hi << 16) |
+				       (uint32_t)gd->bg_free_blocks_count_lo;
+		uint32_t free_inodes = ((uint32_t)gd->bg_free_inodes_count_hi << 16) |
+				       (uint32_t)gd->bg_free_inodes_count_lo;
+		uint32_t used_dirs = ((uint32_t)gd->bg_used_dirs_count_hi << 16) |
+				     (uint32_t)gd->bg_used_dirs_count_lo;
+
+		if ((uint64_t)last_block >= total_blocks) {
+			last_block = (uint32_t)(total_blocks - 1);
+		}
+
+		printf((const int8_t *)"Group ", (unsigned int)group);
+		printf((const int8_t *)": (blocks ", (unsigned long long)first_block);
+		printf((const int8_t *)"-", (unsigned long long)last_block);
+		printf((const int8_t *)")\n");
+		printf((const int8_t *)"  Block bitmap at ", (unsigned long long)gd->bg_block_bitmap_lo);
+		printf((const int8_t *)", Inode bitmap at ", (unsigned long long)gd->bg_inode_bitmap_lo);
+		printf((const int8_t *)", Inode table at ", (unsigned long long)gd->bg_inode_table_lo);
+		printf((const int8_t *)"\n");
+		printf((const int8_t *)"  ", (unsigned long long)free_blocks);
+		printf((const int8_t *)" free blocks, ", (unsigned long long)free_inodes);
+		printf((const int8_t *)" free inodes, ", (unsigned long long)used_dirs);
+		printf((const int8_t *)" directories\n");
+	}
+}
+
+static void cmd_dumpe2fs(const int8_t *arg)
+{
+	int super_only = 0;
+	const char *opt = arg ? (const char *)arg : 0;
+
+	if (opt) {
+		while (*opt == ' ' || *opt == '\t') {
+			opt++;
+		}
+		if (*opt != '\0') {
+			if (strcmp((const int8_t *)opt, (const int8_t *)"-h") == 0) {
+				super_only = 1;
+			} else {
+				printf((const int8_t *)"dumpe2fs: 用法: dumpe2fs [-h]\n");
+				return;
+			}
+		}
+	}
+
+	struct super_block *sb = vfs_get_root_sb();
+	if (!sb || !sb->s_fs_info) {
+		printf((const int8_t *)"dumpe2fs: 文件系统未挂载\n");
+		return;
+	}
+
+	struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+	if (sbi->s_block_size == 0 || sbi->s_block_size > 4096U) {
+		printf((const int8_t *)"dumpe2fs: 不支持的块大小\n");
+		return;
+	}
+
+	char sb_buf[4096];
+	if (ext4_read_block(0, sb_buf) < 0) {
+		printf((const int8_t *)"dumpe2fs: 读取超级块失败\n");
+		return;
+	}
+
+	struct ext4_super_block *esb = (struct ext4_super_block *)(sb_buf + 1024);
+	if (esb->s_magic != EXT4_SUPER_MAGIC) {
+		printf((const int8_t *)"dumpe2fs: ext4 超级块无效\n");
+		return;
+	}
+
+	dump_superblock_info(esb, sbi);
+	if (!super_only) {
+		dump_block_groups(esb, sbi, sb_buf);
+	}
+}
+
 static void cmd_ls(const int8_t *arg) {
     int show_long = 0;   // -l
     int human = 0;       // -h（仅在 show_long=1 时有效）
@@ -1510,6 +1830,7 @@ const struct cmd_entry cmd_table[] = {
 	{"time", cmd_time, "显示当前 RTC 时间"},
 	{"pwd", cmd_pwd, "显示当前工作目录"},
 	{"df", cmd_df, "显示磁盘空间（总量/已用/可用）"},
+	{"dumpe2fs", cmd_dumpe2fs, "显示 ext4 超级块/块组信息 [-h]仅超级块"},
 	{"ls", cmd_ls, "列出目录内容 [-l]详细 [-h]易读大小 [-i]显示inode"},
 	{"mkdir", cmd_mkdir, "创建目录"},
 	{"cd", cmd_cd, "切换工作目录"},
@@ -1528,28 +1849,52 @@ const struct cmd_entry cmd_table[] = {
 	{0, 0, 0},
 };
 
+static int cmd_name_width(int start)
+{
+	int max = 0;
+	int i;
+
+	for (i = start; cmd_table[i].name != 0; i++) {
+		int len = (int)strlen(cmd_table[i].name);
+		if (len > max) {
+			max = len;
+		}
+	}
+	return max;
+}
+
+static void print_cmd_help_row(const struct cmd_entry *entry, int name_width)
+{
+	int len = (int)strlen(entry->name);
+	int pad;
+
+	printf((int8_t *)"  ");
+	printf((int8_t *)entry->name);
+	for (pad = len; pad < name_width; pad++) {
+		printf((int8_t *)" ");
+	}
+	if (entry->help) {
+		printf((int8_t *)"  ");
+		printf((int8_t *)entry->help);
+	}
+	printf((int8_t *)"\n");
+}
+
 static void cmd_help(const int8_t *arg)
 {
-	(void)arg;
 	int index = 0;
+	int width;
+
+	(void)arg;
 	printf((int8_t *)"可用命令：\n");
+	width = cmd_name_width(0);
 	for (; cmd_table[index].name != 0; index++) {
-		printf((int8_t *)"  ");
-		printf((int8_t *)cmd_table[index].name);
-		if (cmd_table[index].help) {
-			printf((int8_t *)"\t- ");
-			printf((int8_t *)cmd_table[index].help);
-		}
-		printf((int8_t *)"\n");
+		print_cmd_help_row(&cmd_table[index], width);
 	}
 	printf((int8_t *)"测试命令：\n");
-	for (index += 1; cmd_table[index].name != 0; index++) {
-		printf((int8_t *)"  ");
-		printf((int8_t *)cmd_table[index].name);
-		if (cmd_table[index].help) {
-			printf((int8_t *)"\t- ");
-			printf((int8_t *)cmd_table[index].help);
-		}
-		printf((int8_t *)"\n");
+	index += 1;
+	width = cmd_name_width(index);
+	for (; cmd_table[index].name != 0; index++) {
+		print_cmd_help_row(&cmd_table[index], width);
 	}
 }
