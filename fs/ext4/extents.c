@@ -598,84 +598,78 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 
 			if (cur_leaf->eh_entries >= cur_leaf->eh_max) {
 				struct ext4_extent *leaf_exts = (struct ext4_extent *)(cur_leaf + 1);
-				struct ext4_extent *tmp;
-				int n = cur_leaf->eh_entries;
-				int i, mid;
+				int n = (int)cur_leaf->eh_entries;
+				int i;
+				int right_count;
 				char *right_buf;
 				struct ext4_extent_header *right_eh;
+				struct ext4_extent *right_exts;
 				uint32_t right_blk;
 
-				tmp = (struct ext4_extent *)malloc(block_size);
-				if (!tmp) {
-					ext4_extents_free_path(path, depth);
-					return -1;
-				}
-				if (n <= 0 || n >= (int)(block_size / sizeof(struct ext4_extent)) - 1) {
-					free(tmp);
+				if (n <= 0 || n != (int)cur_leaf->eh_max) {
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
 
+				/* 与 Linux ext4 一致：在插入点分裂，而非对半分。 */
 				insert_pos = n;
 				while (insert_pos > 0 && leaf_exts[insert_pos - 1].ee_block > new_ex.ee_block) {
 					insert_pos--;
 				}
-				for (i = 0; i < insert_pos; i++) tmp[i] = leaf_exts[i];
-				tmp[insert_pos] = new_ex;
-				for (i = insert_pos; i < n; i++) tmp[i + 1] = leaf_exts[i];
-				n++;
-				mid = n / 2;
-
-				cur_leaf->eh_entries = (uint16_t)mid;
-				for (i = 0; i < mid; i++) leaf_exts[i] = tmp[i];
-				for (i = mid; i < (int)cur_leaf->eh_max; i++) {
-					memset(&leaf_exts[i], 0, sizeof(struct ext4_extent));
-				}
+				right_count = n - insert_pos;
 
 				right_buf = (char *)malloc(block_size);
 				if (!right_buf) {
-					free(tmp);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
 				ext4_extents_init_node((struct ext4_extent_header *)right_buf, block_size, 0);
 				right_eh = (struct ext4_extent_header *)right_buf;
-				right_eh->eh_entries = (uint16_t)(n - mid);
-				{
-					struct ext4_extent *right_exts = (struct ext4_extent *)(right_eh + 1);
-					for (i = 0; i < n - mid; i++) {
-						right_exts[i] = tmp[mid + i];
+				right_exts = (struct ext4_extent *)(right_eh + 1);
+
+				if (right_count > 0) {
+					for (i = 0; i < right_count; i++) {
+						right_exts[i] = leaf_exts[insert_pos + i];
 					}
+					right_eh->eh_entries = (uint16_t)right_count;
+					cur_leaf->eh_entries = (uint16_t)insert_pos;
+					for (i = insert_pos; i < (int)cur_leaf->eh_max; i++) {
+						memset(&leaf_exts[i], 0, sizeof(struct ext4_extent));
+					}
+				}
+
+				if (insert_pos == n) {
+					right_exts[0] = new_ex;
+					right_eh->eh_entries = 1;
+					split_right_ex = new_ex;
+				} else {
+					leaf_exts[insert_pos] = new_ex;
+					cur_leaf->eh_entries = (uint16_t)(insert_pos + 1);
+					split_right_ex = right_exts[0];
 				}
 
 				right_blk = ext4_new_block(sb);
 				if (right_blk == 0) {
-					free(tmp);
 					free(right_buf);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
 				if (right_blk >= fs_blocks_count) {
-					free(tmp);
 					free(right_buf);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
 				if (path[depth].blocknr != 0 &&
 				    ext4_write_block(path[depth].blocknr, path[depth].buf) < 0) {
-					free(tmp);
 					free(right_buf);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
 				if (ext4_write_block(right_blk, right_buf) < 0) {
-					free(tmp);
 					free(right_buf);
 					ext4_extents_free_path(path, depth);
 					return -1;
 				}
-				split_right_ex = ((struct ext4_extent *)(right_eh + 1))[0];
-				free(tmp);
 				free(right_buf);
 
 				need_promote = 1;
@@ -715,22 +709,15 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 						}
 						need_promote = 0;
 					} else {
-						struct ext4_extent_idx *tmpi;
-						int nidx = ieh->eh_entries;
-						int midx;
+						int nidx = (int)ieh->eh_entries;
+						int right_count;
 						char *right_ibuf;
 						struct ext4_extent_header *right_ieh;
 						struct ext4_extent_idx *left_arr;
 						struct ext4_extent_idx *right_arr;
 						uint32_t new_iblk;
 
-						tmpi = (struct ext4_extent_idx *)malloc(block_size);
-						if (!tmpi) {
-							ext4_extents_free_path(path, depth);
-							return -1;
-						}
-						if (nidx <= 0 || nidx >= (int)(block_size / sizeof(struct ext4_extent_idx)) - 1) {
-							free(tmpi);
+						if (nidx <= 0 || nidx != (int)ieh->eh_max) {
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
@@ -739,61 +726,63 @@ int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 						while (insert_pos > 0 && left_arr[insert_pos - 1].ei_block > new_idx.ei_block) {
 							insert_pos--;
 						}
-						for (j = 0; j < insert_pos; j++) tmpi[j] = left_arr[j];
-						tmpi[insert_pos] = new_idx;
-						for (j = insert_pos; j < nidx; j++) tmpi[j + 1] = left_arr[j];
-						nidx++;
-						midx = nidx / 2;
-
-						ieh->eh_entries = (uint16_t)midx;
-						for (j = 0; j < midx; j++) left_arr[j] = tmpi[j];
-						for (j = midx; j < (int)ieh->eh_max; j++) {
-							memset(&left_arr[j], 0, sizeof(struct ext4_extent_idx));
-						}
+						right_count = nidx - insert_pos;
 
 						right_ibuf = (char *)malloc(block_size);
 						if (!right_ibuf) {
-							free(tmpi);
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
 						ext4_extents_init_node((struct ext4_extent_header *)right_ibuf, block_size,
 								       (uint16_t)(ieh->eh_depth));
 						right_ieh = (struct ext4_extent_header *)right_ibuf;
-						right_ieh->eh_entries = (uint16_t)(nidx - midx);
 						right_arr = (struct ext4_extent_idx *)(right_ieh + 1);
-						for (j = 0; j < nidx - midx; j++) right_arr[j] = tmpi[midx + j];
+
+						if (right_count > 0) {
+							for (j = 0; j < right_count; j++) {
+								right_arr[j] = left_arr[insert_pos + j];
+							}
+							right_ieh->eh_entries = (uint16_t)right_count;
+							ieh->eh_entries = (uint16_t)insert_pos;
+							for (j = insert_pos; j < (int)ieh->eh_max; j++) {
+								memset(&left_arr[j], 0, sizeof(struct ext4_extent_idx));
+							}
+						}
+
+						if (insert_pos == nidx) {
+							right_arr[0] = new_idx;
+							right_ieh->eh_entries = 1;
+							split_right_ex.ee_block = new_idx.ei_block;
+						} else {
+							left_arr[insert_pos] = new_idx;
+							ieh->eh_entries = (uint16_t)(insert_pos + 1);
+							split_right_ex.ee_block = right_arr[0].ei_block;
+						}
 
 						new_iblk = ext4_new_block(sb);
 						if (new_iblk == 0) {
-							free(tmpi);
 							free(right_ibuf);
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
 						if (new_iblk >= fs_blocks_count) {
-							free(tmpi);
 							free(right_ibuf);
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
 						if (path[level].blocknr != 0 &&
 						    ext4_write_block(path[level].blocknr, path[level].buf) < 0) {
-							free(tmpi);
 							free(right_ibuf);
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
 						if (ext4_write_block(new_iblk, right_ibuf) < 0) {
-							free(tmpi);
 							free(right_ibuf);
 							ext4_extents_free_path(path, depth);
 							return -1;
 						}
 
-						split_right_ex.ee_block = right_arr[0].ei_block;
 						right_blk = new_iblk;
-						free(tmpi);
 						free(right_ibuf);
 						need_promote = 1;
 					}
