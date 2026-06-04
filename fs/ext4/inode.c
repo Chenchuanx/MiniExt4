@@ -67,6 +67,7 @@ static void simple_free(void *p)
 
 #define EXT4_INODE_SIZE 256
 
+// 获取 inode 所在的块组
 static uint32_t ext4_inode_group_of_ino(struct super_block *sb, uint32_t ino)
 {
 	struct ext4_sb_info *sbi;
@@ -321,7 +322,7 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode, i
 	if (ei) {
 		struct ext4_extent_header *eh;
 		memset(ei->i_block, 0, sizeof(ei->i_block));
-		ei->i_alloc_group_hint = parent_group;
+		ei->i_alloc_group_hint = ext4_inode_group_of_ino(sb, (uint32_t)ino);
 		/* 与 Linux ext4 对齐：普通文件默认使用 extents。 */
 		ei->i_flags |= EXT4_INODE_FLAG_EXTENTS;
 		eh = (struct ext4_extent_header *)ei->i_block;
@@ -397,7 +398,7 @@ static int ext4_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (ei) {
 		memset(ei->i_block, 0, sizeof(ei->i_block));
 		ei->i_block[0] = blocknr;
-		ei->i_alloc_group_hint = parent_group;
+		ei->i_alloc_group_hint = ext4_inode_group_of_ino(sb, (uint32_t)ino);
 	}
 
 	/* 初始化线性目录块： "." + ".." + 空闲目录项。 */

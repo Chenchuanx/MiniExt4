@@ -964,127 +964,128 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     return 0;
 }
 
+/* 与 ext4_mkfs / ext4_write_inode 一致的磁盘 inode 大小 */
+#define EXT4_DISK_INODE_SIZE 256
+
 /**
- * ext4_iget - 获取 inode（从磁盘读取）
+ * ext4_get_inode_disk_loc - 读块组描述符并定位磁盘 inode 在 inode 表中的位置
+ * @sbi: 文件系统私有信息
+ * @ino: inode 号（从 1 起，0 无效）
+ * @out_block: 输出，承载该 inode 的文件系统块号
+ * @out_offset: 输出，块内字节偏移
+ *
+ * 返回 0 成功，-1 失败
  */
-struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
+static int ext4_get_inode_disk_loc(struct ext4_sb_info *sbi, unsigned long ino,
+				   uint32_t *out_block, uint32_t *out_offset)
 {
-    struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
-    struct ext4_group_desc gd;
-    struct ext4_inode_info *ei;
-    struct ext4_inode *raw_inode;
-    struct inode *inode;
-    uint32_t block_size = sbi->s_block_size;
-    uint32_t inodes_per_group = sbi->s_inodes_per_group;
-    uint32_t group = (ino - 1) / inodes_per_group;
-    uint32_t index = (ino - 1) % inodes_per_group;
-    uint32_t inode_table_block;
-    uint32_t inode_offset;
-    uint32_t gd_base;
-    uint32_t desc_off;
-    uint32_t gd_block;
-    uint32_t gd_off;
-    uint32_t copy_sz;
-    char *gd_buf;
-    char *buf;
-    int ret;
-    
-    if (!sbi || !sbi->s_group_desc) {
-        return NULL;
-    }
-    
-    if (group >= sbi->s_groups_count) {
-        return NULL;
-    }
+	struct ext4_group_desc gd;
+	uint32_t block_size;
+	uint32_t inodes_per_group;
+	uint32_t group;
+	uint32_t index;
+	uint32_t gd_base;
+	uint32_t desc_off;
+	uint32_t gd_block;
+	uint32_t gd_off;
+	uint32_t copy_sz;
+	uint32_t inode_table_block;
+	uint32_t inode_offset;
+	char *gd_buf;
+	int ret;
 
-    gd_base = sbi->s_first_data_block + 1;
-    if (block_size == 1024) {
-        gd_base = 2;
-    }
-    desc_off = group * (uint32_t)sbi->s_desc_size;
-    gd_block = gd_base + (desc_off / block_size);
-    gd_off = desc_off % block_size;
-    copy_sz = (uint32_t)sbi->s_desc_size;
-    if (copy_sz > sizeof(struct ext4_group_desc)) {
-        copy_sz = sizeof(struct ext4_group_desc);
-    }
-    if (gd_off + copy_sz > block_size) {
-        return NULL;
-    }
+	if (!sbi || !sbi->s_group_desc || !out_block || !out_offset || ino == 0) {
+		return -1;
+	}
 
-    gd_buf = (char *)malloc(block_size);
-    if (!gd_buf) {
-        return NULL;
-    }
-    ret = ext4_read_block(gd_block, gd_buf);
-    if (ret < 0) {
-        free(gd_buf);
-        return NULL;
-    }
-    memset(&gd, 0, sizeof(gd));
-    memcpy(&gd, gd_buf + gd_off, copy_sz);
-    free(gd_buf);
+	block_size = sbi->s_block_size;
+	inodes_per_group = sbi->s_inodes_per_group;
+	if (inodes_per_group == 0) {
+		return -1;
+	}
 
-    /* 计算 inode 表块号 */
-    inode_table_block = gd.bg_inode_table_lo;
-    /* 使用 superblock 中的 inode 大小（从 ext4_mkfs 中设置） */
-    uint32_t inode_size = 256;  /* Ext4 固定 256 字节 */
-    inode_offset = index * inode_size;
-    inode_table_block += inode_offset / block_size;
-    inode_offset %= block_size;
-    
-    if (inode_table_block >= sbi->s_blocks_count) {
-        printf("ext4: inode 表块号越界\n");
-        return NULL;
-    }
+	group = (uint32_t)((ino - 1) / inodes_per_group);
+	index = (uint32_t)((ino - 1) % inodes_per_group);
+	if (group >= sbi->s_groups_count) {
+		return -1;
+	}
 
-    /* 分配缓冲区 */
-    buf = (char *)malloc(block_size);
-    if (!buf) {
-        return NULL;
-    }
-    
-    /* 读取包含 inode 的块 */
-    ret = ext4_read_block(inode_table_block, buf);
-    if (ret < 0) {
-        printf("读取 inode 表失败\n");
-        free(buf);
-        return NULL;
-    }
-    
-    raw_inode = (struct ext4_inode *)(buf + inode_offset);
-    
-    /* 分配 VFS inode */
-    inode = ext4_alloc_inode(sb);
-    if (!inode) {
-        free(buf);
-        return NULL;
-    }
-    
-    ei = (struct ext4_inode_info *)inode->i_private;
-    
-    /* 填充 VFS inode */
-    inode->i_ino = ino;
-    inode->i_mode = raw_inode->i_mode;
-    inode->i_size = raw_inode->i_size_lo | ((uint64_t)raw_inode->i_size_high << 32);
-    inode->i_blocks = raw_inode->i_blocks_lo | ((uint64_t)raw_inode->i_blocks_hi << 32);
-    inode->i_atime = raw_inode->i_atime;
-    inode->i_mtime = raw_inode->i_mtime;
-    inode->i_ctime = raw_inode->i_ctime;
-    inode->i_uid = raw_inode->i_uid | ((uint32_t)raw_inode->i_uid_high << 16);
-    inode->i_gid = raw_inode->i_gid | ((uint32_t)raw_inode->i_gid_high << 16);
-    inode->i_nlink = raw_inode->i_links_count;
-    
-    /* 填充 Ext4 私有数据 */
-    memcpy(ei->i_block, raw_inode->i_block, sizeof(raw_inode->i_block));
-    ei->i_flags = raw_inode->i_flags;
-    if (sbi->s_inodes_per_group > 0) {
-        ei->i_alloc_group_hint = (ino - 1) / sbi->s_inodes_per_group;
-    } else {
-        ei->i_alloc_group_hint = 0;
-    }
-    
-    /* 设置 inode 操作和默认文件操作（参考 Linux fs/ext4/inode.c） */
+	gd_base = sbi->s_first_data_block + 1;
+	if (block_size == 1024) {
+		gd_base = 2;
+	}
+	desc_off = group * (uint32_t)sbi->s_desc_size;
+	gd_block = gd_base + (desc_off / block_size);
+	gd_off = desc_off % block_size;
+	copy_sz = (uint32_t)sbi->s_desc_size;
+	if (copy_sz > sizeof(struct ext4_group_desc)) {
+		copy_sz = sizeof(struct ext4_group_desc);
+	}
+	if (gd_off + copy_sz > block_size) {
+		return -1;
+	}
+
+	gd_buf = (char *)malloc(block_size);
+	if (!gd_buf) {
+		return -1;
+	}
+	ret = ext4_read_block(gd_block, gd_buf);
+	if (ret < 0) {
+		free(gd_buf);
+		return -1;
+	}
+	memset(&gd, 0, sizeof(gd));
+	memcpy(&gd, gd_buf + gd_off, copy_sz);
+	free(gd_buf);
+
+	inode_table_block = gd.bg_inode_table_lo;
+	inode_offset = index * EXT4_DISK_INODE_SIZE;
+	inode_table_block += inode_offset / block_size;
+	inode_offset %= block_size;
+
+	if (inode_table_block >= sbi->s_blocks_count) {
+		return -1;
+	}
+
+	*out_block = inode_table_block;
+	*out_offset = inode_offset;
+	return 0;
+}
+
+/**
+ * ext4_fill_inode_info - 从磁盘 ext4_inode 填充 ext4_inode_info
+ */
+static void ext4_fill_inode_info(struct ext4_inode_info *ei,
+					  const struct ext4_inode *raw,
+					  unsigned long ino, uint32_t inodes_per_group)
+{
+	memcpy(ei->i_block, raw->i_block, sizeof(raw->i_block));
+	ei->i_flags = raw->i_flags;
+	if (inodes_per_group == 0) {
+		ei->i_alloc_group_hint = 0;
+        return;
+	}
+    ei->i_alloc_group_hint = (uint32_t)((ino - 1) / inodes_per_group);
+}
+
+/**
+ * ext4_fill_inode - 从磁盘 ext4_inode 填充 VFS inode 通用字段
+ */
+static void ext4_fill_inode(struct inode *inode, unsigned long ino,
+				     const struct ext4_inode *raw, uint32_t inodes_per_group)
+{
+	inode->i_ino = ino;
+	inode->i_mode = raw->i_mode;
+	inode->i_size = raw->i_size_lo | ((uint64_t)raw->i_size_high << 32);
+	inode->i_blocks = raw->i_blocks_lo | ((uint64_t)raw->i_blocks_hi << 32);
+	inode->i_atime = raw->i_atime;
+	inode->i_mtime = raw->i_mtime;
+	inode->i_ctime = raw->i_ctime;
+	inode->i_uid = raw->i_uid | ((uint32_t)raw->i_uid_high << 16);
+	inode->i_gid = raw->i_gid | ((uint32_t)raw->i_gid_high << 16);
+	inode->i_nlink = raw->i_links_count;
+
+    // 设置 inode 操作和默认文件操作
     if (S_ISDIR(inode->i_mode)) {
         inode->i_op = &ext4_dir_inode_operations;
         inode->i_fop = &ext4_dir_operations;
@@ -1092,9 +1093,34 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
         inode->i_op = &ext4_file_inode_operations;
         inode->i_fop = &ext4_file_operations;
     }
-    
-    free(buf);
-    
+
+    ext4_fill_inode_info((struct ext4_inode_info *)inode->i_private, raw, ino, inodes_per_group);  // 填充 inode 信息
+}
+
+/**
+ * ext4_iget - 获取 inode（从磁盘读取）
+ */
+struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
+{
+    struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
+    uint32_t inode_table_block;  // Inode 表块号
+    uint32_t inode_offset;  // Inode 表块内偏移
+    // 获取 inode 在磁盘上的位置
+    if (ext4_get_inode_disk_loc(sbi, ino, &inode_table_block, &inode_offset) < 0) {
+        return NULL;
+    }
+
+    char* buf = (char *)malloc(sbi->s_block_size);  // 分配缓冲区
+    int ret = ext4_read_block(inode_table_block, buf);  // 读取 Inode
+    if (ret < 0) {
+        free(buf);
+        return NULL;
+    }
+    struct ext4_inode *raw_inode = (struct ext4_inode *)(buf + inode_offset);
+    struct inode *inode = ext4_alloc_inode(sb);  // 分配 VFS层inode
+    ext4_fill_inode(inode, ino, raw_inode, sbi->s_inodes_per_group);  // 填充 inode
+    free(buf);  // 释放缓冲区
+
     return inode;
 }
 
@@ -1208,21 +1234,11 @@ static int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
     struct super_block *sb = inode->i_sb;
     struct ext4_sb_info *sbi = (struct ext4_sb_info *)sb->s_fs_info;
-    struct ext4_group_desc gd;
     struct ext4_inode_info *ei;
     struct ext4_inode *raw_inode;
     uint32_t block_size;
-    uint32_t inodes_per_group;
-    uint32_t group, index;
     uint32_t inode_table_block;
     uint32_t inode_offset;
-    uint32_t inode_size = 256; /* 与 ext4_mkfs / ext4_iget 保持一致 */
-    uint32_t gd_base;
-    uint32_t desc_off;
-    uint32_t gd_block;
-    uint32_t gd_off;
-    uint32_t copy_sz;
-    char *gd_buf;
     char *buf;
     int ret;
     uint64_t size;
@@ -1230,58 +1246,20 @@ static int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
 
     (void)wbc; /* 当前未使用 */
 
-    if (!sbi || !sbi->s_group_desc) {
+    if (!sbi) {
         return -1;
     }
-
-    block_size = sbi->s_block_size;
-    inodes_per_group = sbi->s_inodes_per_group;
 
     if (inode->i_ino == 0) {
         return -1;
     }
 
-    group  = (inode->i_ino - 1) / inodes_per_group;
-    index  = (inode->i_ino - 1) % inodes_per_group;
-
-    if (group >= sbi->s_groups_count) {
+    if (ext4_get_inode_disk_loc(sbi, inode->i_ino,
+				&inode_table_block, &inode_offset) < 0) {
         return -1;
     }
 
-    gd_base = sbi->s_first_data_block + 1;
-    if (block_size == 1024) {
-        gd_base = 2;
-    }
-    desc_off = group * (uint32_t)sbi->s_desc_size;
-    gd_block = gd_base + (desc_off / block_size);
-    gd_off = desc_off % block_size;
-    copy_sz = (uint32_t)sbi->s_desc_size;
-    if (copy_sz > sizeof(struct ext4_group_desc)) {
-        copy_sz = sizeof(struct ext4_group_desc);
-    }
-    if (gd_off + copy_sz > block_size) {
-        return -1;
-    }
-
-    gd_buf = (char *)malloc(block_size);
-    if (!gd_buf) {
-        return -1;
-    }
-    ret = ext4_read_block(gd_block, gd_buf);
-    if (ret < 0) {
-        free(gd_buf);
-        return -1;
-    }
-    memset(&gd, 0, sizeof(gd));
-    memcpy(&gd, gd_buf + gd_off, copy_sz);
-    free(gd_buf);
-
-    /* 计算 inode 表块号与偏移（与 ext4_iget 相同） */
-    inode_table_block = gd.bg_inode_table_lo;
-    inode_offset = index * inode_size;
-    inode_table_block += inode_offset / block_size;
-    inode_offset %= block_size;
-
+    block_size = sbi->s_block_size;
     buf = (char *)malloc(block_size);
     if (!buf) {
         return -1;

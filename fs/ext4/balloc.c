@@ -279,6 +279,55 @@ static int ext4_bmap_cache_load(struct super_block *sb, struct ext4_sb_info *sbi
 	return 0;
 }
 
+/**
+ * ext4_bmap_scan_alloc_blocks - 在块组位图的一段区间内扫描并分配连续空闲块
+ *
+ * @bitmap_buf:    一块大小的块位图缓存（位为 1 表示已占用）
+ * @block_size:    文件系统块大小，用于计算位图总位数 block_size * 8
+ * @scan_begin:    组内起始位索引（通常为 1，位 0 保留给组元数据）
+ * @scan_end:      组内扫描上界（不含），一般为该组可用块数 group_blocks
+ * @goal_len:      期望连续空闲块数；扫到不少于该长度即可提前结束
+ * @start_bit: 输出：选中区间的起始位（组内偏移，非绝对块号）
+ * @alloc_len: 输入初值常为 0；输出：实际分配长度（可小于 goal_len）
+ *
+ * 扫描过程中记录「当前最长」连续空闲 run；满足 goal_len 后停止继续扫。
+ * 成功则在 bitmap_buf 上就地置位，由调用方写回磁盘并更新组描述符。
+ * 返回 1 表示找到并已标记，0 表示区间内无可用连续块。
+ */
+static int ext4_bmap_scan_alloc_blocks(char *bitmap_buf, uint32_t block_size,
+				       uint32_t scan_begin, uint32_t scan_end, uint32_t goal_len, 
+					   uint32_t *start_bit, uint32_t *alloc_len)
+{
+	if (!bitmap_buf || !start_bit || !alloc_len) return 0;
+	if (scan_end > block_size * 8) return 0;
+	if (scan_begin >= scan_end) return 0;
+	
+	uint32_t start = 0, len = 0;
+	for (uint32_t i = scan_begin; i < scan_end && *alloc_len < goal_len; i++) {
+		uint32_t byte = i / 8, bit = i % 8;
+
+		if (!(bitmap_buf[byte] & (1 << bit))) { // 空闲
+			start = len == 0 ? i : start;
+			len++;
+		} else {
+			len = 0;
+		}
+
+		if (len > *alloc_len) {
+			*alloc_len = len;
+			*start_bit = start;
+		}
+		if (*alloc_len >= goal_len) break;
+	}
+	if (*alloc_len == 0) return 0; // 没有找到连续空闲块
+	// 标记选中区间为已用
+	for (uint32_t j = 0; j < *alloc_len; j++) {
+		uint32_t k = *start_bit + j; // 
+		bitmap_buf[k / 8] |= (1 << (k % 8));
+	}
+	return 1;
+}
+
 int ext4_balloc_flush(struct super_block *sb)
 {
 	struct ext4_sb_info *sbi;
@@ -311,7 +360,7 @@ uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
 	uint32_t dev_blocks = 0;
 	uint32_t new_block = 0, alloc_len = 0;
 	struct ext4_group_desc gd_local;
-	uint32_t i, start_i, limit_i;
+	uint32_t i, start_i;
 	uint32_t g, start_group;
 	uint32_t groups_scanned = 0;
 	uint32_t groups_count;
@@ -409,65 +458,14 @@ uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
 				start_i = gb;
 		}
 
-		limit_i = group_blocks;
-		for (i = start_i; i < limit_i; i++) {
-			uint32_t byte = i / 8, bit = i % 8;
-			if (byte >= block_size) break;
-			if (!(bitmap_buf[byte] & (1 << bit))) {
-				uint32_t run = 1;
-				uint32_t j;
-				uint32_t run_max = goal_len;
-				if (run_max > (group_blocks - i)) {
-					run_max = group_blocks - i;
-				}
-				for (j = i + 1; j < i + run_max; j++) {
-					uint32_t b2 = j / 8, bt2 = j % 8;
-					if (b2 >= block_size) break;
-					if (bitmap_buf[b2] & (1 << bt2)) break;
-					run++;
-				}
-				for (j = 0; j < run; j++) {
-					uint32_t k = i + j;
-					uint32_t b3 = k / 8, bt3 = k % 8;
-					bitmap_buf[b3] |= (1 << bt3);
-				}
-				new_block = group_start + i;
-				alloc_len = run;
-				found = 1;
-				break;
-			}
-		}
-
+		found = ext4_bmap_scan_alloc_blocks(bitmap_buf, block_size, start_i,
+							   group_blocks, goal_len, &i, &alloc_len);
 		if (!found && start_i > 1) {
-			for (i = 1; i < start_i; i++) {
-				uint32_t byte = i / 8, bit = i % 8;
-				if (byte >= block_size) break;
-				if (!(bitmap_buf[byte] & (1 << bit))) {
-					uint32_t run = 1;
-					uint32_t j;
-					uint32_t run_max = goal_len;
-					if (run_max > (group_blocks - i)) {
-						run_max = group_blocks - i;
-					}
-					for (j = i + 1; j < i + run_max; j++) {
-						uint32_t b2 = j / 8, bt2 = j % 8;
-						if (b2 >= block_size) break;
-						if (bitmap_buf[b2] & (1 << bt2)) break;
-						run++;
-					}
-					for (j = 0; j < run; j++) {
-						uint32_t k = i + j;
-						uint32_t b3 = k / 8, bt3 = k % 8;
-						bitmap_buf[b3] |= (1 << bt3);
-					}
-					new_block = group_start + i;
-					alloc_len = run;
-					found = 1;
-					break;
-				}
-			}
+			found = ext4_bmap_scan_alloc_blocks(bitmap_buf, block_size, 1,
+								   start_i, goal_len, &i, &alloc_len);
 		}
 		if (!found) continue;
+		new_block = group_start + i;
 		if (new_block < group_start || new_block >= blocks_count) {
 			return 0;
 		}

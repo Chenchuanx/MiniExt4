@@ -38,17 +38,13 @@ int ext4_read_block(uint32_t blocknr, void *buf)
 		return -1;
 	}
 	
-	/* 计算需要读取的扇区数 */
-	uint32_t sectors_per_block = ext4_block_size / ATA_SECTOR_SIZE;
+	uint32_t sectors_per_block = ext4_block_size / ATA_SECTOR_SIZE;  // 每个块有多少个扇区
 	if (sectors_per_block == 0) {
 		sectors_per_block = 1;
 	}
+	uint32_t lba = blocknr * sectors_per_block;	// 起始LBA
 	
-	/* 计算起始 LBA（假设从 LBA 0 开始，实际应该考虑分区偏移） */
-	uint32_t lba = blocknr * sectors_per_block;
-	
-	/* 调用 ATA 驱动读取 */
-	return ata_read_sectors(lba, (uint8_t)sectors_per_block, buf);
+	return ata_read_sectors(lba, (uint8_t)sectors_per_block, buf); // 调用ATA驱动读取
 }
 
 int ext4_read_blocks(uint32_t blocknr, uint32_t blocks, void *buf)
