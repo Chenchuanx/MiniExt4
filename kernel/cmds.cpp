@@ -25,9 +25,14 @@ static void print_errno_value(int err)
 	printf(v);
 }
 
-static void cmd_time(const int8_t *arg) {
+static void cmd_date(const int8_t *arg)
+{
+	char time_buf[64];
+
 	(void)arg;
-	sysTime();
+	format_date_default((unsigned long)rtc_get_unix_time(), time_buf, (int)sizeof(time_buf));
+	printf((int8_t *)time_buf);
+	printf((int8_t *)"\n");
 }
 
 static void cmd_pwd(const int8_t *arg) {
@@ -1827,19 +1832,19 @@ static void cmd_help(const int8_t *arg);
 
 const struct cmd_entry cmd_table[] = {
 	{"help", cmd_help, "列出所有命令"},
-	{"time", cmd_time, "显示当前 RTC 时间"},
+	{"date", cmd_date, "显示当前日期时间"},
 	{"pwd", cmd_pwd, "显示当前工作目录"},
-	{"df", cmd_df, "显示磁盘空间（总量/已用/可用）"},
-	{"dumpe2fs", cmd_dumpe2fs, "显示 ext4 超级块/块组信息 [-h]仅超级块"},
+	{"cd", cmd_cd, "切换工作目录"},
 	{"ls", cmd_ls, "列出目录内容 [-l]详细 [-h]易读大小 [-i]显示inode"},
 	{"mkdir", cmd_mkdir, "创建目录"},
-	{"cd", cmd_cd, "切换工作目录"},
 	{"touch", cmd_touch, "创建空文件（不存在时）"},
 	{"echo", cmd_echo, "输出文本；支持 > 重定向到文件"},
 	{"cat", cmd_cat, "显示文件内容"},
-	{"find", cmd_find, "递归查找: find <路径> [-name <名称>]"},	
+	{"find", cmd_find, "递归查找: find <路径> [-name <名称>]"},
 	{"rm", cmd_rm, "删除文件"},
 	{"rmdir", cmd_rmdir, "删除空目录"},
+	{"df", cmd_df, "显示磁盘空间（总量/已用/可用）"},
+	{"dumpe2fs", cmd_dumpe2fs, "显示 ext4 超级块/块组信息 [-h]仅超级块"},
 	{0, 0, 0},
 	{"test_fill", cmd_test_fill, "性能测试: test_fill <路径> <字节数>"},
 	{"test_read", cmd_test_read, "性能测试: test_read <路径>"},
@@ -1891,10 +1896,10 @@ static void cmd_help(const int8_t *arg)
 	for (; cmd_table[index].name != 0; index++) {
 		print_cmd_help_row(&cmd_table[index], width);
 	}
-	printf((int8_t *)"测试命令：\n");
-	index += 1;
-	width = cmd_name_width(index);
-	for (; cmd_table[index].name != 0; index++) {
-		print_cmd_help_row(&cmd_table[index], width);
-	}
+	// printf((int8_t *)"测试命令：\n");
+	// index += 1;
+	// width = cmd_name_width(index);
+	// for (; cmd_table[index].name != 0; index++) {
+	// 	print_cmd_help_row(&cmd_table[index], width);
+	// }
 }

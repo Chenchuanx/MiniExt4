@@ -13,9 +13,11 @@ extern "C" {
  */
 void format_time(unsigned long secs, char *buf, int buf_size);
 
+/* Linux date 默认输出，例如 "Thu Jun  4 22:03:00 UTC 2026" */
+void format_date_default(unsigned long secs, char *buf, int buf_size);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif
-

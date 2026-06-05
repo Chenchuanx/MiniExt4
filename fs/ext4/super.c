@@ -81,19 +81,6 @@ static void simple_free(void *ptr)
 
 /* MAX_MALLOC_SIZE 需覆盖 block_size 缓冲及按组游标表（groups_count * 4）。 */
 
-/* 主超级块位置：
- * - block_size == 1024: block 1, offset 0
- * - block_size  > 1024: block 0, offset 1024 */
-static uint32_t ext4_primary_sb_blocknr(uint32_t block_size)
-{
-	return (block_size == 1024U) ? 1U : 0U;
-}
-
-static uint32_t ext4_primary_sb_offset(uint32_t block_size)
-{
-	return (block_size == 1024U) ? 0U : 1024U;
-}
-
 /* 将块大小转换为 ext4 s_log_block_size（block_size = 1024 << log） */
 static int ext4_block_size_to_log(uint32_t block_size, uint32_t *out_log)
 {
@@ -290,8 +277,8 @@ int ext4_mkfs(uint32_t block_size, uint32_t total_blocks)
     memset(buf, 0, buf_size);
     
     /* 读取主 superblock 所在块（保留该块内其余区域） */
-    sb_blocknr = ext4_primary_sb_blocknr(block_size);
-    sb_offset = ext4_primary_sb_offset(block_size);
+    sb_blocknr = (block_size == 1024U) ? 1U : 0U;
+    sb_offset = (block_size == 1024U) ? 0U : 1024U;
     ret = ext4_read_block(sb_blocknr, buf);
     if (ret < 0) {
         free(buf);
@@ -654,8 +641,8 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         return -1;
     }
     
-    sb_blocknr = ext4_primary_sb_blocknr(block_size);
-    sb_offset = ext4_primary_sb_offset(block_size);
+    sb_blocknr = (block_size == 1024U) ? 1U : 0U;
+    sb_offset = (block_size == 1024U) ? 0U : 1024U;
 
     /* 先读取主 superblock */
     ext4_set_block_size(block_size);
@@ -1153,8 +1140,8 @@ int ext4_sync_super_free_counts(struct super_block *sb)
 	}
 
 	block_size = sbi->s_block_size;
-	sb_blocknr = ext4_primary_sb_blocknr(block_size);
-	sb_offset = ext4_primary_sb_offset(block_size);
+	sb_blocknr = (block_size == 1024U) ? 1U : 0U;
+	sb_offset = (block_size == 1024U) ? 0U : 1024U;
 	sb_buf = (char *)malloc(block_size);
 	if (!sb_buf) {
 		return -1;
