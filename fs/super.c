@@ -6,6 +6,7 @@
 
 #include <linux/fs.h>
 #include <fs/fs_types.h>
+#include <linux/blkdev.h>
 #include <lib/printf.h>
 
 #ifndef NULL
@@ -48,11 +49,18 @@ struct dentry *get_sb_bdev(struct file_system_type *fs_type,
 			   int (*fill_super)(struct super_block *, void *))
 {
 	struct super_block *sb;
+	struct block_device *bdev;
 	struct inode *root_inode;
 	struct dentry *root_dentry;
 	int ret;
 	
 	if (!fs_type || !fill_super) {
+		return NULL;
+	}
+
+	bdev = blkdev_get_by_name(dev_name);
+	if (!bdev) {
+		printf("blkdev: device not found\n");
 		return NULL;
 	}
 	
@@ -63,7 +71,9 @@ struct dentry *get_sb_bdev(struct file_system_type *fs_type,
 	
 	/* 初始化超级块 */
 	INIT_LIST_HEAD(&sb->s_list);
-	sb->s_dev = 0;  /* 简化版，不处理设备号 */
+	sb->s_dev = bdev->bd_dev;
+	sb->s_bdev = bdev;
+	bdev->bd_super = sb;
 	sb->s_count = 1;
 	sb->s_active = 1;
 	sb->s_type = fs_type;

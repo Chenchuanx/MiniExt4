@@ -11,6 +11,7 @@ MiniExt4/
 ├── init/                # 初始化代码
 ├── kernel/              # 核心内核代码
 ├── mm/                  # 内存管理
+├── block/               # 块设备层（介于 drivers 与 fs 之间）
 ├── drivers/             # 设备驱动
 ├── lib/                 # 库函数
 ├── fs/                  # 文件系统 ⭐
@@ -79,31 +80,56 @@ kernel/
 
 ---
 
-### 4. `drivers/` - 设备驱动
+### 4. `block/` - 块设备子系统
+
+**作用：** 通用块设备层，介于文件系统与具体存储驱动之间
+
+**文件：**
+- `blkdev.c` - 块设备注册、扇区级读写（对应 Linux `block/blk-core.c` 等）
+
+**头文件：** `include/linux/blkdev.h`
+
+**对应 Linux 内核：** `linux/block/`
+
+**依赖关系：**
+```
+fs/  →  block/blkdev.c  →  drivers/ata/（通过 block_device_ops）
+```
+
+---
+
+### 5. `drivers/` - 设备驱动
 
 **作用：** 硬件设备驱动程序
 
 **子目录：**
 ```
 drivers/
+├── ata/                 # ATA/IDE 存储驱动（对应 Linux drivers/ata/）
+│   ├── ata.cpp          # PIO/DMA 硬件操作
+│   └── ata_disk.c       # 向块层注册磁盘（对应 add_disk）
 ├── base/                # 驱动框架
-│   └── driver.cpp      # 驱动管理器（统一管理所有驱动）
-└── input/               # 输入设备驱动
-    ├── keyboard.cpp     # PS/2键盘驱动
-    ├── mouse.cpp        # PS/2鼠标驱动
-    └── handlers.cpp     # 输入事件处理器
+│   └── driver.cpp       # 驱动管理器
+├── input/               # 输入设备
+│   ├── keyboard.cpp
+│   ├── mouse.cpp
+│   └── handlers.cpp
+├── pit.cpp              # 定时器
+├── rtc.cpp              # 实时时钟
+└── video/               # 帧缓冲控制台
 ```
 
-**对应Linux内核：** `linux/drivers/`
+**头文件：** `include/linux/ata.h`（ATA）、`include/drivers/*.h`（其他驱动）
+
+**对应 Linux 内核：** `linux/drivers/`
 
 **说明：**
-- **base/** - 驱动框架，提供统一的驱动注册和管理接口
-- **input/** - 输入设备驱动，处理键盘和鼠标输入
-- 采用分层设计，便于扩展新设备
+- **ata/** - 硬件读写与块层注册分离，对齐 Linux `drivers/ata/` 职责划分
+- **input/** - PS/2 键盘/鼠标，由 DriverManager 统一管理
 
 ---
 
-### 5. `lib/` - 库函数
+### 6. `lib/` - 库函数
 
 **作用：** 内核使用的通用库函数
 
@@ -121,7 +147,7 @@ drivers/
 
 ---
 
-### 6. `fs/` - 文件系统 ⭐
+### 7. `fs/` - 文件系统 ⭐
 
 **作用：** 文件系统实现（项目核心）
 
@@ -154,8 +180,11 @@ fs/
 **结构：**
 ```
 include/
-├── linux/              # Linux风格内核头文件
-│   └── types.h         # 基础类型定义（int8_t, uint32_t等）
+├── linux/              # Linux 风格内核头文件
+│   ├── types.h         # 基础类型
+│   ├── blkdev.h        # 块设备子系统
+│   ├── ata.h           # ATA 驱动
+│   └── fs.h            # VFS 入口
 ├── kernel/             # 核心内核头文件
 │   ├── interrupts.h    # 中断管理
 │   ├── multitasking.h  # 任务调度
@@ -191,7 +220,8 @@ include/
 - `init/` - 启动
 - `kernel/` - 核心功能
 - `mm/` - 内存
-- `drivers/` - 驱动
+- `block/` - 块设备子系统
+- `drivers/` - 设备驱动
 - `fs/` - 文件系统
 - `lib/` - 工具库
 ---
@@ -201,9 +231,9 @@ include/
 ```
 init/
   └─> kernel/ (中断、调度)
-      └─> mm/ (内存管理)
-          └─> drivers/ (设备驱动)
-              └─> lib/ (库函数)
+      ├─> mm/ (内存管理)
+      ├─> drivers/ata/ (硬件) ──> block/ (块层) ──> fs/ext4/
+      └─> lib/ (库函数)
                   └─> fs/ (文件系统) ⭐
 ```
 

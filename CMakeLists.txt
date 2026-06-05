@@ -46,6 +46,8 @@ set(KERNEL_SOURCES
     init/loader.s
     init/interruptstubs.s
     mm/gdt.cpp
+    block/blkdev.c
+    drivers/ata/ata_disk.c
     lib/port.cpp
     fs/super.c
     fs/dir.c
@@ -62,7 +64,7 @@ set(KERNEL_SOURCES
     fs/ext4/file.c
     fs/ext4/extents.c
     fs/ext4/htree.c
-    drivers/ata.cpp
+    drivers/ata/ata.cpp
     drivers/pit.cpp
     drivers/rtc.cpp
     kernel/interrupts/interrupts.cpp

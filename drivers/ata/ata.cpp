@@ -2,7 +2,7 @@
  * ATA/IDE 驱动实现
  * 支持 PIO 模式读写
  */
-#include <drivers/ata.h>
+#include <linux/ata.h>
 #include <lib/port.h>
 
 /* ATA DMA 命令 */

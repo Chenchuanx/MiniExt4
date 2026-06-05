@@ -9,7 +9,7 @@
 #include <lib/printf.h>
 #include <kernel/shell.h>
 #include <drivers/handlers.h>
-#include <drivers/ata.h>
+#include <linux/ata.h>
 #include <drivers/pit.h>
 #include <linux/fs.h>
 #include <fs/ext4/ext4.h>
@@ -105,8 +105,9 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
     // 激活中断
     interrupts.Activate();
 
-    // 初始化 ATA 驱动
+    // 初始化 ATA 驱动并向块层注册磁盘
     ata_init();
+    ata_disk_register();
 
     // 注册 Ext4 文件系统
     printf("正在注册 Ext4 文件系统...\n");

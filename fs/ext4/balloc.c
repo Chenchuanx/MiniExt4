@@ -7,7 +7,7 @@
 #include <linux/fs.h>
 #include <fs/ext4/ext4.h>
 #include <lib/printf.h>
-#include <drivers/ata.h>
+#include <linux/blkdev.h>
 
 #ifndef NULL
 #define NULL ((void *)0)
@@ -389,8 +389,8 @@ uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
 	}
 	if (blocks_count == 0) return 0;
 	{
-		uint32_t sectors_per_block = block_size / ATA_SECTOR_SIZE;
-		uint32_t total_sectors = ata_get_total_sectors();
+		uint32_t sectors_per_block = block_size / sb->s_bdev->bd_sector_size;
+		uint32_t total_sectors = (uint32_t)blkdev_nr_sectors(sb->s_bdev);
 		if (sectors_per_block == 0) sectors_per_block = 1;
 		if (total_sectors > 0) {
 			dev_blocks = total_sectors / sectors_per_block;

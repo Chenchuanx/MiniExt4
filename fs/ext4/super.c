@@ -8,7 +8,7 @@
 #include <lib/printf.h>
 #include <fs/dentry.h>  /* 使用 VFS dentry 接口 */
 #include <drivers/rtc.h>
-#include <drivers/ata.h>
+#include <linux/blkdev.h>
 
 #ifndef NULL
 #define NULL ((void *)0)
@@ -661,8 +661,8 @@ static int ext4_fill_super(struct super_block *sb, void *data)
         /* 磁盘是空的，按当前硬盘容量初始化：
          * total_blocks = total_sectors / (block_size / 512)
          * 若 IDENTIFY 获取失败，退回到最小默认值。 */
-        uint32_t total_sectors = ata_get_total_sectors();
-        uint32_t sectors_per_block = block_size / ATA_SECTOR_SIZE;
+        uint32_t total_sectors = (uint32_t)blkdev_nr_sectors(sb->s_bdev);
+        uint32_t sectors_per_block = block_size / sb->s_bdev->bd_sector_size;
         uint32_t total_blocks;
         if (sectors_per_block == 0) {
             sectors_per_block = 1;
@@ -766,8 +766,8 @@ static int ext4_fill_super(struct super_block *sb, void *data)
     
     /* 计算块组数 */
     if (sbi->s_blocks_count == 0) {
-        uint32_t total_sectors = ata_get_total_sectors();
-        uint32_t sectors_per_block = block_size / ATA_SECTOR_SIZE;
+        uint32_t total_sectors = (uint32_t)blkdev_nr_sectors(sb->s_bdev);
+        uint32_t sectors_per_block = block_size / sb->s_bdev->bd_sector_size;
         uint32_t fallback_blocks;
         if (sectors_per_block == 0) sectors_per_block = 1;
         if (total_sectors == 0) {

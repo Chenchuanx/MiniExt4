@@ -5,6 +5,7 @@
 #include <linux/types.h>
 #include <linux/list.h>
 #include <fs/super.h>
+#include <linux/blkdev.h>
 
 /* 前向声明 */
 struct dentry;
@@ -44,26 +45,6 @@ struct file_system_type {
 
 	/* 简化版文件系统类型链表指针（用于 register_filesystem） */
 	struct file_system_type	*next;
-};
-
-/**
- * block_device - 块设备结构体
- * 
- * 表示一个块设备（如硬盘分区）
- */
-struct block_device {
-	dev_t			bd_dev;		/* 设备号 */
-	int			bd_openers;	/* 打开计数 */
-	
-	/* 设备信息 */
-	unsigned int		bd_block_size;	/* 块大小 */
-	loff_t			bd_size;	/* 设备大小 */
-	
-	/* 超级块 */
-	struct super_block	*bd_super;	/* 关联的超级块 */
-	
-	/* 私有数据 */
-	void			*bd_private;	/* 块设备私有数据 */
 };
 
 /* 前向声明 */
