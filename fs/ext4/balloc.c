@@ -280,52 +280,43 @@ static int ext4_bmap_cache_load(struct super_block *sb, struct ext4_sb_info *sbi
 }
 
 /**
- * ext4_bmap_scan_alloc_blocks - 在块组位图的一段区间内扫描并分配连续空闲块
- *
- * @bitmap_buf:    一块大小的块位图缓存（位为 1 表示已占用）
- * @block_size:    文件系统块大小，用于计算位图总位数 block_size * 8
- * @scan_begin:    组内起始位索引（通常为 1，位 0 保留给组元数据）
- * @scan_end:      组内扫描上界（不含），一般为该组可用块数 group_blocks
- * @goal_len:      期望连续空闲块数；扫到不少于该长度即可提前结束
- * @start_bit: 输出：选中区间的起始位（组内偏移，非绝对块号）
- * @alloc_len: 输入初值常为 0；输出：实际分配长度（可小于 goal_len）
- *
- * 扫描过程中记录「当前最长」连续空闲 run；满足 goal_len 后停止继续扫。
- * 成功则在 bitmap_buf 上就地置位，由调用方写回磁盘并更新组描述符。
- * 返回 1 表示找到并已标记，0 表示区间内无可用连续块。
+ * ext4_bmap_scan_free_run - 在位图区间内扫描最长连续空闲 run（不修改位图）
  */
-static int ext4_bmap_scan_alloc_blocks(char *bitmap_buf, uint32_t block_size,
-				       uint32_t scan_begin, uint32_t scan_end, uint32_t goal_len, 
-					   uint32_t *start_bit, uint32_t *alloc_len)
+static int ext4_bmap_scan_free_run(char *bitmap_buf, uint32_t block_size,
+				   uint32_t scan_begin, uint32_t scan_end, uint32_t goal_len,
+				   uint32_t *start_bit, uint32_t *alloc_len, int must_full)
 {
 	if (!bitmap_buf || !start_bit || !alloc_len) return 0;
 	if (scan_end > block_size * 8) return 0;
 	if (scan_begin >= scan_end) return 0;
-	
-	uint32_t start = 0, len = 0;
-	for (uint32_t i = scan_begin; i < scan_end && *alloc_len < goal_len; i++) {
-		uint32_t byte = i / 8, bit = i % 8;
 
-		if (!(bitmap_buf[byte] & (1 << bit))) { // 空闲
+	uint32_t start = 0, len = 0;
+	for (uint32_t i = scan_begin; i < scan_end; i++) {
+		uint32_t byte = i / 8, bit = i % 8;
+		if (!(bitmap_buf[byte] & (1 << bit))) {  // 空闲
 			start = len == 0 ? i : start;
 			len++;
 		} else {
 			len = 0;
 		}
-
 		if (len > *alloc_len) {
 			*alloc_len = len;
 			*start_bit = start;
 		}
-		if (*alloc_len >= goal_len) break;
+		if (*alloc_len >= goal_len) {
+			break;
+		}
 	}
-	if (*alloc_len == 0) return 0; // 没有找到连续空闲块
-	// 标记选中区间为已用
-	for (uint32_t j = 0; j < *alloc_len; j++) {
-		uint32_t k = *start_bit + j; // 
+
+	return must_full ? *alloc_len >= goal_len : *alloc_len > 0;
+}
+
+static void ext4_bmap_mark_blocks(char *bitmap_buf, uint32_t start_bit, uint32_t len)
+{
+	for (uint32_t j = 0; j < len; j++) {
+		uint32_t k = start_bit + j;
 		bitmap_buf[k / 8] |= (1 << (k % 8));
 	}
-	return 1;
 }
 
 int ext4_balloc_flush(struct super_block *sb)
@@ -426,100 +417,136 @@ uint32_t ext4_new_blocks_in_group(struct super_block *sb, uint32_t goal_len,
 	}
 	if (start_group >= groups_count) start_group = 0;
 
-	for (groups_scanned = 0; groups_scanned < groups_count; groups_scanned++) {
-		uint32_t group_blocks;
-		uint32_t group_start;
-		char *bitmap_buf;
-		int found = 0;
+	/*
+	 * goal_len > 1 时先要求凑满 goal 再标位；扫遍所有组仍不足则降级接受最长 run。
+	 * goal_len == 1 时单遍扫描即可。
+	 */
+	for (uint32_t pass = 0; pass < 2 && new_block == 0; pass++) {
+		int require_full_goal = (goal_len > 1 && pass == 0);
 
-		g = start_group + groups_scanned;
-		if (g >= groups_count) g -= groups_count;
-
-		group_blocks = blocks_per_group;
-		group_start = g * blocks_per_group;
-		if (group_start >= blocks_count) {
-			continue;
-		}
-		if (group_start + group_blocks > blocks_count)
-			group_blocks = blocks_count - group_start;
-		if (group_blocks <= 1) continue;
-		if (ext4_read_group_desc(sb, g, &gd_local) < 0) continue;
-		if (gd_local.bg_block_bitmap_lo == 0) continue;
-		ret = ext4_bmap_cache_load(sb, sbi, g, &gd_local);
-		if (ret < 0) continue;
-
-		bitmap_buf = sbi->s_bmap_cache_buf;
-
-		/* 组内 next-fit：每组独立游标；无表时从 bit 1 起扫 */
-		start_i = 1;
-		if (sbi->s_alloc_nf.goal_bit_per_group && g < sbi->s_groups_count) {
-			uint32_t gb = sbi->s_alloc_nf.goal_bit_per_group[g];
-			if (gb >= 1 && gb < group_blocks)
-				start_i = gb;
+		if (goal_len == 1 && pass > 0) {
+			break;
 		}
 
-		found = ext4_bmap_scan_alloc_blocks(bitmap_buf, block_size, start_i,
-							   group_blocks, goal_len, &i, &alloc_len);
-		if (!found && start_i > 1) {
-			found = ext4_bmap_scan_alloc_blocks(bitmap_buf, block_size, 1,
-								   start_i, goal_len, &i, &alloc_len);
-		}
-		if (!found) continue;
-		new_block = group_start + i;
-		if (new_block < group_start || new_block >= blocks_count) {
-			return 0;
-		}
-		if (alloc_len == 0) {
-			return 0;
-		}
-		if (new_block + alloc_len > blocks_count) {
-			return 0;
-		}
+		for (groups_scanned = 0; groups_scanned < groups_count; groups_scanned++) {
+			uint32_t group_blocks;
+			uint32_t group_start;
+			char *bitmap_buf;
+			int found = 0;
 
-		sbi->s_bmap_cache_dirty = 1;
+			g = start_group + groups_scanned;
+			if (g >= groups_count) {
+				g -= groups_count;
+			}
 
-		ret = ext4_bmap_cache_flush(sb, sbi);
-		if (ret < 0) return 0;
+			group_blocks = blocks_per_group;
+			group_start = g * blocks_per_group;
+			if (group_start >= blocks_count) {
+				continue;
+			}
+			if (group_start + group_blocks > blocks_count) {
+				group_blocks = blocks_count - group_start;
+			}
+			if (group_blocks <= 1) {
+				continue;
+			}
+			if (ext4_read_group_desc(sb, g, &gd_local) < 0) {
+				continue;
+			}
+			if (gd_local.bg_block_bitmap_lo == 0) {
+				continue;
+			}
+			ret = ext4_bmap_cache_load(sb, sbi, g, &gd_local);
+			if (ret < 0) {
+				continue;
+			}
 
-		if (gd_local.bg_free_blocks_count_lo > alloc_len) {
-			gd_local.bg_free_blocks_count_lo = (uint16_t)(gd_local.bg_free_blocks_count_lo - alloc_len);
-		} else {
-			gd_local.bg_free_blocks_count_lo = 0;
-		}
-		if (ext4_write_group_desc(sb, g, &gd_local) < 0) return 0;
-		if (g == 0) *sbi->s_group_desc = gd_local;
+			bitmap_buf = sbi->s_bmap_cache_buf;
 
-		/* 更新 next-fit 游标：每组独立；跨组起点仍用 goal_group */
-		{
-			uint32_t next_bit = i + alloc_len;
+			start_i = 1;
 			if (sbi->s_alloc_nf.goal_bit_per_group && g < sbi->s_groups_count) {
-				if (next_bit >= group_blocks) {
-					sbi->s_alloc_nf.goal_bit_per_group[g] = 1;
-					sbi->s_alloc_nf.goal_group =
-						(g + 1 < groups_count) ? (g + 1) : 0;
-				} else {
-					sbi->s_alloc_nf.goal_bit_per_group[g] = next_bit;
-					sbi->s_alloc_nf.goal_group = g;
-				}
-			} else {
-				if (next_bit >= group_blocks) {
-					sbi->s_alloc_nf.goal_group =
-						(g + 1 < groups_count) ? (g + 1) : 0;
-				} else {
-					sbi->s_alloc_nf.goal_group = g;
+				uint32_t gb = sbi->s_alloc_nf.goal_bit_per_group[g];
+				if (gb >= 1 && gb < group_blocks) {
+					start_i = gb;
 				}
 			}
-		}
+			alloc_len = 0;
+			found = ext4_bmap_scan_free_run(bitmap_buf, block_size, start_i,
+							group_blocks, goal_len, &i, &alloc_len, require_full_goal);
+			if (!found && start_i > 1) {
+				found = ext4_bmap_scan_free_run(bitmap_buf, block_size, 1,
+								start_i, goal_len, &i, &alloc_len, require_full_goal);
+			}
+			if (!found) {
+				continue;
+			}
 
-		/* Linux 类似的延迟统计更新：按运行时参数批量同步 super free count */
-		sbi->s_bg_sync_pending++;
-		if (sbi->s_bg_sync_pending >= ext4_get_bg_sync_batch()) {
-			(void)ext4_sync_super_free_counts(sb);
-			sbi->s_bg_sync_pending = 0;
+			ext4_bmap_mark_blocks(bitmap_buf, i, alloc_len);
+			new_block = group_start + i;
+			if (new_block < group_start || new_block >= blocks_count) {
+				return 0;
+			}
+			if (alloc_len == 0) {
+				return 0;
+			}
+			if (new_block + alloc_len > blocks_count) {
+				return 0;
+			}
+
+			sbi->s_bmap_cache_dirty = 1;
+
+			ret = ext4_bmap_cache_flush(sb, sbi);
+			if (ret < 0) {
+				return 0;
+			}
+
+			if (gd_local.bg_free_blocks_count_lo > alloc_len) {
+				gd_local.bg_free_blocks_count_lo =
+					(uint16_t)(gd_local.bg_free_blocks_count_lo - alloc_len);
+			} else {
+				gd_local.bg_free_blocks_count_lo = 0;
+			}
+			if (ext4_write_group_desc(sb, g, &gd_local) < 0) {
+				return 0;
+			}
+			if (g == 0) {
+				*sbi->s_group_desc = gd_local;
+			}
+
+			{
+				uint32_t next_bit = i + alloc_len;
+
+				if (sbi->s_alloc_nf.goal_bit_per_group && g < sbi->s_groups_count) {
+					if (next_bit >= group_blocks) {
+						sbi->s_alloc_nf.goal_bit_per_group[g] = 1;
+						sbi->s_alloc_nf.goal_group =
+							(g + 1 < groups_count) ? (g + 1) : 0;
+					} else {
+						sbi->s_alloc_nf.goal_bit_per_group[g] = next_bit;
+						sbi->s_alloc_nf.goal_group = g;
+					}
+				} else {
+					if (next_bit >= group_blocks) {
+						sbi->s_alloc_nf.goal_group =
+							(g + 1 < groups_count) ? (g + 1) : 0;
+					} else {
+						sbi->s_alloc_nf.goal_group = g;
+					}
+				}
+			}
+
+			sbi->s_bg_sync_pending++;
+			if (sbi->s_bg_sync_pending >= ext4_get_bg_sync_batch()) {
+				(void)ext4_sync_super_free_counts(sb);
+				sbi->s_bg_sync_pending = 0;
+			}
+			break;
 		}
-		break;
 	}
-	if (new_block == 0) return 0;
+
+	if (new_block == 0) {
+		return 0;
+	}
 	if (out_len) {
 		*out_len = alloc_len;
 	}
