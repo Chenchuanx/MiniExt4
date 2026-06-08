@@ -3,6 +3,7 @@
  */
 #include "lib/syscall.h"
 #include <linux/fs.h>
+#include <linux/memory.h>
 #include <fs/fs_types.h>
 #include <fs/ext4/ext4.h>
 #include <lib/printf.h>
@@ -17,31 +18,6 @@
 /* 前向声明 */
 extern int ext4_read_block(uint32_t blocknr, void *buf);
 extern void ext4_set_block_size(uint32_t size);
-
-/* 简化的内存操作函数（避免依赖标准库） */
-static void *simple_memset(void *s, int c, size_t n)
-{
-	unsigned char *p = (unsigned char *)s;
-	size_t i;
-	for (i = 0; i < n; i++) {
-		p[i] = (unsigned char)c;
-	}
-	return s;
-}
-
-static void *simple_memcpy(void *dest, const void *src, size_t n)
-{
-	unsigned char *d = (unsigned char *)dest;
-	const unsigned char *s = (const unsigned char *)src;
-	size_t i;
-	for (i = 0; i < n; i++) {
-		d[i] = s[i];
-	}
-	return dest;
-}
-
-#define memset simple_memset
-#define memcpy simple_memcpy
 
 /* 简化的内存分配（使用静态池，避免依赖标准库） */
 #define MAX_MALLOC_SIZE 65536

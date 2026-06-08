@@ -5,6 +5,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/memory.h>
 #include <fs/ext4/ext4.h>
 #include <fs/ext4/htree.h>
 
@@ -23,52 +24,6 @@ extern int ext4_extents_get_block(struct inode *inode, uint32_t lblock,
 				  int create, uint32_t *out_block, int *is_new);
 extern uint32_t ext4_new_block(struct super_block *sb);
 extern int ext4_free_block(struct super_block *sb, uint32_t blocknr);
-
-/* 简化的内存操作函数 */
-static void *simple_memset(void *s, int c, size_t n)
-{
-	unsigned char *p = (unsigned char *)s;
-	size_t i;
-	for (i = 0; i < n; i++) p[i] = (unsigned char)c;
-	return s;
-}
-static void *simple_memcpy(void *d, const void *s, size_t n)
-{
-	unsigned char *dd = (unsigned char *)d;
-	const unsigned char *ss = (const unsigned char *)s;
-	size_t i;
-	for (i = 0; i < n; i++) dd[i] = ss[i];
-	return d;
-}
-static int simple_memcmp(const void *a, const void *b, size_t n)
-{
-	const unsigned char *aa = (const unsigned char *)a;
-	const unsigned char *bb = (const unsigned char *)b;
-	size_t i;
-	for (i = 0; i < n; i++) if (aa[i] != bb[i]) return aa[i] - bb[i];
-	return 0;
-}
-static void *simple_memmove(void *d, const void *s, size_t n)
-{
-	unsigned char *dd = (unsigned char *)d;
-	const unsigned char *ss = (const unsigned char *)s;
-	size_t i;
-
-	if (!d || !s || n == 0)
-		return d;
-	if (dd < ss) {
-		for (i = 0; i < n; i++)
-			dd[i] = ss[i];
-	} else {
-		for (i = n; i > 0; i--)
-			dd[i - 1] = ss[i - 1];
-	}
-	return d;
-}
-#define memset simple_memset
-#define memcpy simple_memcpy
-#define memcmp simple_memcmp
-#define memmove simple_memmove
 
 /* 简化的内存分配（使用静态池） */
 #define MAX_MALLOC BLOCK_SIZE

@@ -5,6 +5,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/memory.h>
 #include <fs/fs_types.h>
 #include <linux/blkdev.h>
 #include <lib/printf.h>
@@ -12,18 +13,6 @@
 #ifndef NULL
 #define NULL ((void *)0)
 #endif
-
-/* 简化的内存操作函数 */
-static void *simple_memset(void *s, int c, size_t n)
-{
-	unsigned char *p = (unsigned char *)s;
-	for (size_t i = 0; i < n; i++) {
-		p[i] = (unsigned char)c;
-	}
-	return s;
-}
-
-#define memset simple_memset
 
 /* 超级块链表头 */
 static struct list_head super_blocks = { &super_blocks, &super_blocks };

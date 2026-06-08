@@ -14,6 +14,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/memory.h>
 #include <fs/ext4/ext4.h>
 #include <lib/printf.h>
 
@@ -28,31 +29,6 @@ extern uint32_t ext4_get_block_size(void);
 extern uint32_t ext4_get_blocks_count(void);
 extern uint32_t ext4_new_block(struct super_block *sb);
 extern uint32_t ext4_new_blocks(struct super_block *sb, uint32_t goal_len, uint32_t *out_len);
-
-/* 简化的内存操作函数（与其他 Ext4 源文件保持一致） */
-static void *simple_memset(void *s, int c, size_t n)
-{
-	unsigned char *p = (unsigned char *)s;
-	size_t i;
-	for (i = 0; i < n; i++) {
-		p[i] = (unsigned char)c;
-	}
-	return s;
-}
-
-static void *simple_memcpy(void *dest, const void *src, size_t n)
-{
-	unsigned char *d = (unsigned char *)dest;
-	const unsigned char *s = (const unsigned char *)src;
-	size_t i;
-	for (i = 0; i < n; i++) {
-		d[i] = s[i];
-	}
-	return dest;
-}
-
-#define memset simple_memset
-#define memcpy simple_memcpy
 
 /* 简化的内存分配（使用静态池，避免依赖标准库） */
 #define MAX_MALLOC_SIZE BLOCK_SIZE

@@ -5,6 +5,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/memory.h>
 #include <fs/inode.h>
 
 #ifndef NULL
@@ -20,19 +21,6 @@
 
 static struct inode vfs_inode_pool[VFS_MAX_INODES];
 static int vfs_inode_used[VFS_MAX_INODES];  /* 使用 int 而不是 bool，避免 C/C++ 兼容问题 */
-
-/* 简化的内存操作函数 */
-static void *simple_memset(void *s, int c, size_t n)
-{
-	unsigned char *p = (unsigned char *)s;
-	size_t i;
-	for (i = 0; i < n; i++) {
-		p[i] = (unsigned char)c;
-	}
-	return s;
-}
-
-#define memset simple_memset
 
 /**
  * vfs_alloc_inode - 分配一个 VFS inode

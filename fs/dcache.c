@@ -4,48 +4,13 @@
  */
 
 #include <linux/fs.h>
+#include <linux/memory.h>
 #include <fs/dentry.h>
 #include <lib/printf.h>
 
 #ifndef NULL
 #define NULL ((void *)0)
 #endif
-
-/* 简化的内存操作函数 */
-static void *simple_memset(void *s, int c, size_t n)
-{
-	unsigned char *p = (unsigned char *)s;
-	for (size_t i = 0; i < n; i++) {
-		p[i] = (unsigned char)c;
-	}
-	return s;
-}
-
-static void *simple_memcpy(void *dest, const void *src, size_t n)
-{
-	unsigned char *d = (unsigned char *)dest;
-	const unsigned char *s = (const unsigned char *)src;
-	for (size_t i = 0; i < n; i++) {
-		d[i] = s[i];
-	}
-	return dest;
-}
-
-static int simple_memcmp(const void *s1, const void *s2, size_t n)
-{
-	const unsigned char *p1 = (const unsigned char *)s1;
-	const unsigned char *p2 = (const unsigned char *)s2;
-	for (size_t i = 0; i < n; i++) {
-		if (p1[i] != p2[i]) {
-			return p1[i] - p2[i];
-		}
-	}
-	return 0;
-}
-
-#define memset simple_memset
-#define memcpy simple_memcpy
-#define memcmp simple_memcmp
 
 /* Dentry 池大小 */
 #define DCACHE_MAX_DENTRIES 256

@@ -4,6 +4,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/memory.h>
 #include <fs/ext4/ext4.h>
 #include <fs/dentry.h>
 
@@ -20,28 +21,6 @@ extern uint32_t ext4_get_block_size(void);
 extern int ext4_extents_map_blocks(struct inode *inode, uint32_t lblock,
 				   uint32_t max_blocks, uint32_t *out_block,
 				   uint32_t *out_len);
-
-/* 简化的内存操作函数 */
-static void *simple_memcpy(void *d, const void *s, size_t n)
-{
-	unsigned char *dd = (unsigned char *)d;
-	const unsigned char *ss = (const unsigned char *)s;
-	size_t i;
-	for (i = 0; i < n; i++) dd[i] = ss[i];
-	return d;
-}
-static void *simple_memset(void *s, int c, size_t n)
-{
-	unsigned char *p = (unsigned char *)s;
-	size_t i;
-	for (i = 0; i < n; i++) p[i] = (unsigned char)c;
-	return s;
-}
-#define memcpy simple_memcpy
-#define memset simple_memset
-
-
-
 
 /* 简化的内存分配（使用静态池） */
 #define MAX_MALLOC BLOCK_SIZE
