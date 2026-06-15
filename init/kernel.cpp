@@ -131,8 +131,9 @@ extern "C" void kernelMain(void * multiboot_structure, int32_t magic_number)
     // 显示Shell提示符
     printf(SHELL_PROMPT);
 
-    // 主循环：轮询执行已提交的一行命令
+    // 主循环：轮询执行已提交的一行命令；空闲时 hlt 等待中断唤醒
     while (1) {
         simpleShell(&keyboard);
+        __asm__ volatile("hlt");
     }
 }

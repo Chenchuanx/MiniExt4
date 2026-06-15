@@ -19,13 +19,13 @@ struct block_device_ops {
 };
 
 struct block_device {
-	dev_t			bd_dev;
-	int			bd_openers;
-	unsigned int		bd_sector_size;
-	uint64_t		bd_nr_sectors;
-	const struct block_device_ops *bd_ops;
-	struct super_block	*bd_super;
-	void			*bd_private;
+	dev_t			bd_dev; 	// 设备号
+	int			bd_openers;		// 打开者数量
+	unsigned int		bd_sector_size; // 扇区大小
+	uint64_t		bd_nr_sectors; // 扇区数量
+	const struct block_device_ops *bd_ops; // 块设备操作
+	struct super_block	*bd_super; // 超级块
+	void			*bd_private; // 私有数据
 };
 
 int blkdev_register(struct block_device *bdev);
